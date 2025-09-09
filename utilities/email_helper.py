@@ -44,9 +44,16 @@ async def add_league_member_email(
             except json.JSONDecodeError:
                 existing_emails = []
         
-        # Add email if not already present
-        if email not in existing_emails:
-            existing_emails.append(email)
+        # Normalize the input email
+        normalized_email = email.strip().lower()
+        
+        if not normalized_email:
+            print(f"Invalid email (empty after normalization) for league {league_id}")
+            return False
+        
+        # Add email if not already present (compare normalized)
+        if normalized_email not in existing_emails:
+            existing_emails.append(normalized_email)
             
             # Update league
             await db.execute(
@@ -56,10 +63,10 @@ async def add_league_member_email(
             )
             await db.commit()
             
-            print(f"Added email {email} to league {league_id}")
+            print(f"Added normalized email {normalized_email} to league {league_id}")
             return True
         else:
-            print(f"Email {email} already exists in league {league_id}")
+            print(f"Email {normalized_email} already exists in league {league_id}")
             return True
             
     except Exception as e:
@@ -103,9 +110,16 @@ async def remove_league_member_email(
             except json.JSONDecodeError:
                 existing_emails = []
         
-        # Remove email if present
-        if email in existing_emails:
-            existing_emails.remove(email)
+        # Normalize the input email for comparison
+        normalized_email = email.strip().lower()
+        
+        if not normalized_email:
+            print(f"Invalid email (empty after normalization) for league {league_id}")
+            return False
+        
+        # Remove email if present (compare normalized)
+        if normalized_email in existing_emails:
+            existing_emails.remove(normalized_email)
             
             # Update league
             await db.execute(
@@ -115,10 +129,10 @@ async def remove_league_member_email(
             )
             await db.commit()
             
-            print(f"Removed email {email} from league {league_id}")
+            print(f"Removed normalized email {normalized_email} from league {league_id}")
             return True
         else:
-            print(f"Email {email} not found in league {league_id}")
+            print(f"Email {normalized_email} not found in league {league_id}")
             return True
             
     except Exception as e:
@@ -144,18 +158,43 @@ async def set_league_member_emails(
         bool: True if successful, False otherwise
     """
     try:
-        # Validate emails
-        valid_emails = [email.strip() for email in emails if email and email.strip()]
+        # Guard against None or non-iterable input
+        if emails is None:
+            emails = []
         
-        # Update league
+        try:
+            iter(emails)
+        except TypeError:
+            print(f"Invalid emails input for league {league_id}: not iterable")
+            return False
+        
+        # Normalize and deduplicate emails while preserving order
+        seen = set()
+        normalized_emails = []
+        
+        for email in emails:
+            if email and isinstance(email, str):
+                # Normalize: strip whitespace and convert to lowercase
+                normalized = email.strip().lower()
+                
+                # Skip empty emails after normalization
+                if not normalized:
+                    continue
+                
+                # Add to list only if not seen before (preserves order, removes duplicates)
+                if normalized not in seen:
+                    seen.add(normalized)
+                    normalized_emails.append(normalized)
+        
+        # Update league with normalized, deduplicated emails
         await db.execute(
             update(League)
             .where(League.id == league_id)
-            .values(league_member_emails=json.dumps(valid_emails))
+            .values(league_member_emails=json.dumps(normalized_emails))
         )
         await db.commit()
         
-        print(f"Set {len(valid_emails)} emails for league {league_id}")
+        print(f"Set {len(normalized_emails)} normalized, deduplicated emails for league {league_id}")
         return True
         
     except Exception as e:
