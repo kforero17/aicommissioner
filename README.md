@@ -1,6 +1,9 @@
 # AI Commissioner - Fantasy Sports AI Agent
 
-A SaaS platform that integrates with fantasy sports leagues to provide automated AI-powered recaps, power rankings, and content generation throughout the season.
+[![FastAPI](https://img.shields.io/badge/FastAPI-005571?style=for-the-badge&logo=fastapi)](https://fastapi.tiangolo.com)
+[![Python](https://img.shields.io/badge/python-3670A0?style=for-the-badge&logo=python&logoColor=ffdd54)](https://python.org)
+
+A comprehensive SaaS platform that seamlessly integrates with fantasy sports leagues to provide automated AI-powered recaps, power rankings, and engaging content generation throughout the season. Transform your league's communication with intelligent, personalized, and timely updates.
 
 ## Features
 
