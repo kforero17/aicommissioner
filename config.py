@@ -31,6 +31,13 @@ class Settings(BaseSettings):
     # GroupMe
     groupme_access_token: Optional[str] = None
     
+    # Email/SMTP
+    smtp_server: Optional[str] = None
+    smtp_port: int = 587
+    smtp_username: Optional[str] = None
+    smtp_password: Optional[str] = None
+    smtp_from_email: Optional[str] = None
+    
     # Application
     debug: bool = True
     host: str = "0.0.0.0"

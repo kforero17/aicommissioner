@@ -24,6 +24,9 @@ celery-beat==2.2.1
 httpx==0.25.2
 aiohttp==3.9.1
 
+# Email
+aiosmtplib==3.0.1
+
 # AI/LLM
 openai==1.3.7
 anthropic==0.7.7

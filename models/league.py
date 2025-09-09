@@ -49,6 +49,10 @@ class League(Base):
     # GroupMe integration
     groupme_bot_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     
+    # Email integration
+    enable_email_recaps: Mapped[bool] = mapped_column(Boolean, default=False)
+    league_member_emails: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON array of email addresses
+    
     # AI settings
     enable_power_rankings: Mapped[bool] = mapped_column(Boolean, default=True)
     enable_waiver_recaps: Mapped[bool] = mapped_column(Boolean, default=True)
