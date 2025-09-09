@@ -1,5 +1,6 @@
-/** @type {import('next').NextConfig} */
-const nextConfig = {
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
   async rewrites() {
     // Get backend URL from environment with fallback to localhost
     const backendUrl = process.env.BACKEND_URL || 'http://localhost:8000'
@@ -29,4 +30,4 @@ const nextConfig = {
   },
 }
 
-module.exports = nextConfig
+export default nextConfig

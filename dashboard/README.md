@@ -61,4 +61,5 @@ The dashboard proxies API calls to the backend server. The backend URL is config
 - **Framework**: Next.js 14 with App Router
 - **Styling**: Tailwind CSS
 - **Language**: TypeScript
+- **Configuration**: TypeScript-based Next.js config with environment-driven rewrites
 - **API**: Fetch with proxy to FastAPI backend
