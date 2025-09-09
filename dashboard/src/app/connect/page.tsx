@@ -2,6 +2,16 @@
 
 import { useState } from 'react'
 
+/**
+ * Client-side page component that renders UI to connect Yahoo Fantasy and Sleeper leagues.
+ *
+ * Renders two connection panels: a Yahoo section that redirects the browser to `/auth/yahoo/start`
+ * when the "Connect Yahoo" button is clicked, and a Sleeper section with a form that accepts a
+ * required `league_id` and optional `groupme_bot_id`. Submitting the Sleeper form validates the
+ * league ID, sends a POST to `/connect/sleeper` with the provided data, and displays status
+ * feedback. While the request is in flight a loading state disables the submit button and updates
+ * its label.
+ */
 export default function ConnectPage() {
   const [sleeperData, setSleeperData] = useState({
     league_id: '',
