@@ -15,12 +15,21 @@ A simple Next.js micro-dashboard for managing fantasy football leagues with AI-p
 npm install
 ```
 
-2. Start the development server:
+2. (Optional) Set backend URL environment variable:
+```bash
+# For development (default)
+export BACKEND_URL=http://localhost:8000
+
+# For production
+export BACKEND_URL=https://your-api-domain.com
+```
+
+3. Start the development server:
 ```bash
 npm run dev
 ```
 
-3. Make sure your AI Commissioner backend is running on `http://localhost:8000`
+4. Make sure your AI Commissioner backend is running on the configured URL (default: `http://localhost:8000`)
 
 ## Pages
 
@@ -41,11 +50,11 @@ npm run dev
 
 ## API Integration
 
-The dashboard proxies API calls to the backend server running on port 8000:
-- `/api/*` → `http://localhost:8000/api/*`
-- `/auth/*` → `http://localhost:8000/auth/*` 
-- `/connect/*` → `http://localhost:8000/connect/*`
-- `/admin/*` → `http://localhost:8000/admin/*`
+The dashboard proxies API calls to the backend server. The backend URL is configurable via the `BACKEND_URL` environment variable (defaults to `http://localhost:8000`):
+- `/api/*` → `${BACKEND_URL}/api/*`
+- `/auth/*` → `${BACKEND_URL}/auth/*` 
+- `/connect/*` → `${BACKEND_URL}/connect/*`
+- `/admin/*` → `${BACKEND_URL}/admin/*`
 
 ## Tech Stack
 
