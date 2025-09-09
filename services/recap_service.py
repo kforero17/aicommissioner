@@ -1,5 +1,6 @@
 """Main service for generating and publishing fantasy sports recaps."""
-from typing import Optional
+import json
+from typing import Optional, List
 from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +11,7 @@ from models.league import League
 from ai_text.summary_generator import SummaryGenerator
 from ai_text.text_formatter import TextFormatter
 from publishers.groupme_publisher import GroupMePublisher
+from publishers.email_publisher import EmailPublisher
 
 
 class RecapService:
@@ -17,11 +19,79 @@ class RecapService:
     
     def __init__(self):
         self.formatter = TextFormatter()
-        self.publisher = GroupMePublisher()
+        self.groupme_publisher = GroupMePublisher()
+        self.email_publisher = EmailPublisher()
     
     async def close(self):
         """Clean up resources."""
-        await self.publisher.close()
+        await self.groupme_publisher.close()
+    
+    def _get_league_member_emails(self, league: League) -> List[str]:
+        """Parse and return league member emails from JSON string."""
+        if not league.league_member_emails:
+            return []
+        
+        try:
+            emails = json.loads(league.league_member_emails)
+            if isinstance(emails, list):
+                return [email for email in emails if email and isinstance(email, str)]
+            return []
+        except (json.JSONDecodeError, TypeError):
+            print(f"Invalid email format for league {league.id}")
+            return []
+    
+    async def _publish_to_channels(
+        self, 
+        league: League, 
+        recap_text: str, 
+        recap_type: str = "Weekly Recap"
+    ) -> dict:
+        """
+        Publish recap to all configured channels (GroupMe and Email).
+        
+        Returns:
+            dict: Status of each publishing attempt
+        """
+        results = {"groupme": False, "email": False}
+        
+        # Publish to GroupMe if configured
+        if league.groupme_bot_id:
+            try:
+                success = await self.groupme_publisher.send_long_message(
+                    league.groupme_bot_id, 
+                    recap_text
+                )
+                results["groupme"] = success
+                if success:
+                    print(f"Published {recap_type.lower()} to GroupMe for league {league.id}")
+                else:
+                    print(f"Failed to publish {recap_type.lower()} to GroupMe for league {league.id}")
+            except Exception as e:
+                print(f"Error publishing to GroupMe for league {league.id}: {e}")
+        
+        # Publish to Email if configured
+        if league.enable_email_recaps:
+            member_emails = self._get_league_member_emails(league)
+            if member_emails:
+                try:
+                    success = await self.email_publisher.send_recap_email(
+                        to_emails=member_emails,
+                        league_name=league.name,
+                        week=league.week or 1,
+                        recap_text=recap_text,
+                        recap_type=recap_type
+                    )
+                    results["email"] = success
+                    if success:
+                        print(f"Published {recap_type.lower()} to {len(member_emails)} email recipients for league {league.id}")
+                    else:
+                        print(f"Failed to publish {recap_type.lower()} via email for league {league.id}")
+                except Exception as e:
+                    print(f"Error publishing to email for league {league.id}: {e}")
+            else:
+                print(f"No email addresses configured for league {league.id}")
+        
+        return results
     
     async def generate_power_rankings_recap(
         self, 
@@ -74,15 +144,8 @@ class RecapService:
             recap_text = header + recap_text
             
             # Publish if requested
-            if publish and league.groupme_bot_id:
-                success = await self.publisher.send_long_message(
-                    league.groupme_bot_id, 
-                    recap_text
-                )
-                if success:
-                    print(f"Published power rankings recap for league {league_id}")
-                else:
-                    print(f"Failed to publish power rankings recap for league {league_id}")
+            if publish:
+                await self._publish_to_channels(league, recap_text, "Power Rankings")
             
             return recap_text
     
@@ -133,15 +196,8 @@ class RecapService:
                 recap_text = self._format_waiver_focused_deterministic(summary)
             
             # Publish if requested
-            if publish and league.groupme_bot_id:
-                success = await self.publisher.send_long_message(
-                    league.groupme_bot_id, 
-                    recap_text
-                )
-                if success:
-                    print(f"Published waiver recap for league {league_id}")
-                else:
-                    print(f"Failed to publish waiver recap for league {league_id}")
+            if publish:
+                await self._publish_to_channels(league, recap_text, "Waiver Report")
             
             return recap_text
     
@@ -262,16 +318,8 @@ async def run_custom_recap(
             else:
                 recap_text = service.formatter.render_deterministic(summary, style)
             
-            # Publish if GroupMe bot configured
-            if league.groupme_bot_id:
-                success = await service.publisher.send_long_message(
-                    league.groupme_bot_id, 
-                    recap_text
-                )
-                if success:
-                    print(f"Published custom recap for league {league_id}")
-                else:
-                    print(f"Failed to publish custom recap for league {league_id}")
+            # Publish to all configured channels
+            await service._publish_to_channels(league, recap_text, "Custom Recap")
             
             print(f"Generated custom recap for league {league_id}: {len(recap_text)} characters")
     
