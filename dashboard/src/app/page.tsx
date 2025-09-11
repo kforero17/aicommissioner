@@ -1,5 +1,14 @@
 import Link from 'next/link'
 
+/**
+ * Landing/dashboard page for the "AI Commissioner" app.
+ *
+ * Renders a static, responsive hero and feature dashboard with navigation cards
+ * linking to Connect, Settings (id 1), and Preview pages, plus a features
+ * summary (Power Rankings, Waiver Reports, AI Personalities, Multi-Platform).
+ *
+ * @returns A React element representing the home page layout.
+ */
 export default function Home() {
   return (
     <div className="min-h-screen bg-gray-50">

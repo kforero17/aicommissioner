@@ -10,6 +10,15 @@ export const metadata: Metadata = {
   description: 'Manage your fantasy football leagues with AI-powered recaps',
 }
 
+/**
+ * Root layout for the dashboard app.
+ *
+ * Renders the top-level HTML scaffold using the Inter font, a fixed navigation bar
+ * with the brand ("🏈 AI Commissioner") and links to "/connect" and "/preview",
+ * and injects the routed page content via `children`.
+ *
+ * @param children - Page content to render below the navigation bar.
+ */
 export default function RootLayout({
   children,
 }: {
