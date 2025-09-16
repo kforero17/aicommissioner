@@ -1,27 +1,53 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
+import { useAuth } from '@/contexts/AuthContext'
 
 export default function Login() {
   const [email, setEmail] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [showSuccess, setShowSuccess] = useState(false)
+  const router = useRouter()
+  const { login, loginWithProvider, isAuthenticated, user } = useAuth()
+
+  useEffect(() => {
+    if (isAuthenticated && user) {
+      // Redirect based on onboarding status
+      if (user.hasCompletedOnboarding) {
+        router.push('/dashboard')
+      } else {
+        router.push('/onboarding')
+      }
+    }
+  }, [isAuthenticated, user, router])
 
   const handleEmailLogin = async (e: React.FormEvent) => {
     e.preventDefault()
     setIsLoading(true)
     
-    // Simulate API call
-    setTimeout(() => {
-      setIsLoading(false)
+    try {
+      await login(email)
       setShowSuccess(true)
-    }, 2000)
+      // The useEffect above will handle redirection
+    } catch (error) {
+      console.error('Login error:', error)
+    } finally {
+      setIsLoading(false)
+    }
   }
 
-  const handleSocialLogin = (provider: string) => {
-    // Implement social login logic
-    console.log(`Login with ${provider}`)
+  const handleSocialLogin = async (provider: string) => {
+    setIsLoading(true)
+    try {
+      await loginWithProvider(provider)
+      // The useEffect above will handle redirection
+    } catch (error) {
+      console.error('Social login error:', error)
+    } finally {
+      setIsLoading(false)
+    }
   }
 
   if (showSuccess) {
@@ -59,7 +85,7 @@ export default function Login() {
       <div className="max-w-md w-full space-y-8">
         <div className="text-center">
           <h2 className="text-3xl font-bold text-gray-900 mb-2">Welcome back</h2>
-          <p className="text-gray-600">Sign in to your All Pro Commish account</p>
+          <p className="text-gray-600">Sign in to your Hall of Fame LM account</p>
         </div>
 
         <div className="bg-white rounded-xl shadow-lg p-8 space-y-6">
@@ -67,7 +93,8 @@ export default function Login() {
           <div className="space-y-3">
             <button
               onClick={() => handleSocialLogin('google')}
-              className="w-full flex items-center justify-center px-4 py-3 border border-gray-300 rounded-lg text-gray-700 bg-white hover:bg-gray-50 transition-colors duration-200"
+              disabled={isLoading}
+              className="w-full flex items-center justify-center px-4 py-3 border border-gray-300 rounded-lg text-gray-700 bg-white hover:bg-gray-50 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <svg className="w-5 h-5 mr-3" viewBox="0 0 24 24">
                 <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
@@ -80,7 +107,8 @@ export default function Login() {
 
             <button
               onClick={() => handleSocialLogin('apple')}
-              className="w-full flex items-center justify-center px-4 py-3 border border-gray-300 rounded-lg text-gray-700 bg-white hover:bg-gray-50 transition-colors duration-200"
+              disabled={isLoading}
+              className="w-full flex items-center justify-center px-4 py-3 border border-gray-300 rounded-lg text-gray-700 bg-white hover:bg-gray-50 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <svg className="w-5 h-5 mr-3" viewBox="0 0 24 24">
                 <path fill="currentColor" d="M17.05 20.28c-.98.95-2.05.88-3.08.4-1.09-.5-2.08-.48-3.24 0-1.44.62-2.2.44-3.06-.4C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09l.01-.01zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/>

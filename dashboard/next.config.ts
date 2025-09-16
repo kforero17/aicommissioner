@@ -2,14 +2,10 @@ import type { NextConfig } from 'next'
 
 const nextConfig: NextConfig = {
   async rewrites() {
-    // Get backend URL from environment with fallback to localhost
     const backendUrl = process.env.BACKEND_URL || 'http://localhost:8000'
-    
-    // Ensure protocol is included and strip trailing slash
     const normalizedBackendUrl = backendUrl.replace(/\/$/, '')
     
     return [
-      // Proxy API calls to the backend
       {
         source: '/api/:path*',
         destination: `${normalizedBackendUrl}/api/:path*`,
