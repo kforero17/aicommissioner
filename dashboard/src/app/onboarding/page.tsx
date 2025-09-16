@@ -451,8 +451,17 @@ function TeamVerification({ leagueData, onComplete }: { leagueData: any; onCompl
 }
 
 // Completion Component
-function SetupComplete() {
+function SetupComplete({ leagueId }: { leagueId?: string }) {
   const router = useRouter()
+
+  const handleGoToSettings = () => {
+    if (leagueId) {
+      router.push(`/settings/${leagueId}`)
+    } else {
+      // Fallback to dashboard if no leagueId available
+      router.push('/dashboard')
+    }
+  }
 
   return (
     <div className="w-full max-w-2xl mx-auto text-center">
@@ -478,16 +487,16 @@ function SetupComplete() {
           </button>
           
           <button
-            onClick={() => router.push('/settings')}
+            onClick={handleGoToSettings}
             className="w-full bg-gray-100 text-gray-700 py-4 px-6 rounded-lg hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 transition duration-200 text-lg font-medium"
           >
-            Go to Dashboard
+            {leagueId ? 'Go to League Settings' : 'Go to Dashboard'}
           </button>
         </div>
 
         <div className="mt-8 p-4 bg-blue-50 rounded-lg">
           <p className="text-sm text-blue-800">
-            <strong>Next Steps:</strong> Your first weekly recap will be sent on {new Date().toLocaleDateString('en-US', { weekday: 'long' })} at 9:00 AM. You can change this anytime in settings.
+            <strong>Next Steps:</strong> Your first weekly recap will be sent on {new Date().toLocaleDateString('en-US', { weekday: 'long' })} at 9:00 AM. You can change this anytime in {leagueId ? 'league settings' : 'your dashboard'}.
           </p>
         </div>
       </div>
@@ -574,7 +583,7 @@ function OnboardingContent() {
               onComplete={handleTeamVerification} 
             />
           )}
-          {currentStep === 4 && <SetupComplete />}
+          {currentStep === 4 && <SetupComplete leagueId={onboardingData.league?.leagueId} />}
         </div>
       </div>
     </div>
