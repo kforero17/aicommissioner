@@ -15,7 +15,7 @@ class EmailPublisher:
     """Publisher for sending emails to league members."""
     
     def __init__(
-        self, 
+        self,
         smtp_server: Optional[str] = None,
         smtp_port: Optional[int] = None,
         username: Optional[str] = None,
@@ -26,12 +26,39 @@ class EmailPublisher:
         self.username = username or settings.smtp_username
         self.password = password or settings.smtp_password
         self.from_email = settings.smtp_from_email or self.username
-    
+
+        self._validate_config()
+
+    def _validate_config(self) -> None:
+        """Validate SMTP configuration at initialization to fail fast."""
+        missing_fields = []
+
+        if not self.smtp_server:
+            missing_fields.append("SMTP_SERVER")
+        if not self.smtp_port:
+            missing_fields.append("SMTP_PORT")
+        if not self.username:
+            missing_fields.append("SMTP_USERNAME")
+        if not self.password:
+            missing_fields.append("SMTP_PASSWORD")
+
+        if missing_fields:
+            raise ValueError(
+                f"SMTP configuration incomplete. Missing required fields: {', '.join(missing_fields)}. "
+                f"Please set these environment variables or pass them to EmailPublisher constructor."
+            )
+
+        if not isinstance(self.smtp_port, int):
+            raise ValueError(f"SMTP_PORT must be an integer, got {type(self.smtp_port).__name__}")
+
+        if self.smtp_port not in [25, 465, 587, 2525]:
+            print(f"Warning: Unusual SMTP port {self.smtp_port}. Common ports are 25, 465, 587, 2525")
+
+        if "@" not in self.username:
+            print(f"Warning: SMTP username '{self.username}' doesn't look like an email address")
+
     async def _create_connection(self) -> aiosmtplib.SMTP:
         """Create and configure async SMTP connection."""
-        if not all([self.smtp_server, self.smtp_port, self.username, self.password]):
-            raise ValueError("SMTP configuration is incomplete")
-        
         # Create async SMTP connection
         smtp = aiosmtplib.SMTP(
             hostname=self.smtp_server,

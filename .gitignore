@@ -213,6 +213,14 @@ instance/
 .env.production
 .env.staging
 
+# Security - SSL certificates and sensitive files
+cert.pem
+key.pem
+*.pem
+cookies.txt
+*.crt
+*.key
+
 # Alembic
 alembic/versions/*.py
 !alembic/versions/

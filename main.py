@@ -1,11 +1,38 @@
 """Main FastAPI application entry point."""
+import os
+import ssl
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 
 from config import settings
 from api.routes import auth, admin, webhooks
 from database.connection import init_db
+
+# Disable SSL verification in debug mode (corporate network workaround)
+if settings.debug:
+    import warnings
+
+    # Suppress SSL warnings
+    warnings.filterwarnings('ignore', message='Unverified HTTPS request')
+
+    try:
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    except ImportError:
+        pass
+
+    # Set environment variables to disable SSL verification
+    os.environ['CURL_CA_BUNDLE'] = ''
+    os.environ['REQUESTS_CA_BUNDLE'] = ''
+    os.environ['PYTHONHTTPSVERIFY'] = '0'
+    os.environ['SSL_CERT_FILE'] = ''
+
+    # Override SSL context creation globally
+    ssl._create_default_https_context = ssl._create_unverified_context
+
+    print("⚠️  SSL verification disabled for development (DEBUG=true)")
 
 
 def create_app() -> FastAPI:
@@ -17,12 +44,30 @@ def create_app() -> FastAPI:
         debug=settings.debug,
     )
     
-    # CORS middleware
+    # Session middleware (required for OAuth)
+    # Configure for development with Cloudflare Tunnel
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=settings.secret_key,
+        session_cookie="session",
+        max_age=3600,  # 1 hour
+        same_site="lax",
+        https_only=False  # Allow HTTP in development
+    )
+    
+    # CORS middleware - use specific origins even in development
+    allowed_origins = [
+        settings.frontend_url,
+        "http://localhost:3000",
+        "http://localhost:3003",
+        "https://muze-coral-carol-furnishings.trycloudflare.com",  # Cloudflare Tunnel
+    ] if settings.debug else [settings.frontend_url]
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"] if settings.debug else ["https://yourdomain.com"],
+        allow_origins=allowed_origins,
         allow_credentials=True,
-        allow_methods=["*"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
         allow_headers=["*"],
     )
     

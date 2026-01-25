@@ -2,14 +2,16 @@
 import os
 from typing import Optional
 
+from cryptography.fernet import Fernet
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
     
-    # Database
-    database_url: str = "postgresql+asyncpg://username:password@localhost/aicommissioner"
+    # Database (REQUIRED - no default for security)
+    database_url: str
     
     # Redis (for Celery)
     redis_url: str = "redis://localhost:6379"
@@ -17,16 +19,33 @@ class Settings(BaseSettings):
     # Yahoo OAuth
     yahoo_client_id: Optional[str] = None
     yahoo_client_secret: Optional[str] = None
-    yahoo_redirect_uri: str = "http://localhost:8000/auth/yahoo/callback"
+    yahoo_redirect_uri: str = "https://localhost:8000/auth/yahoo/callback"
     
     # AI Services
     openai_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
     
-    # Security
-    secret_key: str = "your_secret_key_here_change_in_production"
-    algorithm: str = "HS256"
+    # Security (REQUIRED - no defaults for sensitive keys)
+    secret_key: str
+    encryption_key: str  # For encrypting OAuth tokens at rest (Fernet key)
     access_token_expire_minutes: int = 30
+
+    @field_validator('encryption_key')
+    @classmethod
+    def validate_encryption_key(cls, v: str) -> str:
+        """Validate that encryption_key is a valid Fernet key."""
+        if not v:
+            raise ValueError('encryption_key cannot be empty')
+        try:
+            # Try to create a Fernet instance to validate the key format
+            Fernet(v.encode())
+        except Exception as e:
+            raise ValueError(
+                f'encryption_key must be a valid Fernet key. '
+                f'Generate one with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" '
+                f'Error: {str(e)}'
+            )
+        return v
     
     # GroupMe
     groupme_access_token: Optional[str] = None
@@ -38,10 +57,11 @@ class Settings(BaseSettings):
     smtp_password: Optional[str] = None
     smtp_from_email: Optional[str] = None
     
-    # Application
-    debug: bool = True
+    # Application (debug defaults to False for security)
+    debug: bool = False
     host: str = "0.0.0.0"
     port: int = 8000
+    frontend_url: str = "http://localhost:3000"
     
     # Timezone
     default_timezone: str = "America/Chicago"

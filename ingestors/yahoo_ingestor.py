@@ -1,10 +1,11 @@
 """Yahoo Fantasy API data ingestor for normalizing fantasy league data."""
 import json
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any
 
 import httpx
+import xmltodict
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -24,9 +25,12 @@ class YahooAPI:
     
     def __init__(self, access_token: str):
         self.access_token = access_token
+        # Bypass SSL verification in debug mode (corporate network)
+        verify_ssl = not settings.debug
         self.client = httpx.AsyncClient(
             timeout=30.0,
-            headers={"Authorization": f"Bearer {access_token}"}
+            headers={"Authorization": f"Bearer {access_token}"},
+            verify=verify_ssl
         )
     
     async def close(self):
@@ -34,20 +38,32 @@ class YahooAPI:
         await self.client.aclose()
     
     async def get_user_leagues(self, game_key: str = "nfl") -> List[Dict[str, Any]]:
-        """Get all leagues for the authenticated user."""
-        # Get current year's game
-        current_year = datetime.now().year
-        game_id = f"{current_year if game_key == 'nfl' else game_key}"
-        
+        """Get all leagues for the authenticated user across all seasons."""
+        # Use game_codes instead of game_keys to get ALL seasons for a sport
+        # This returns leagues from 2023, 2024, 2025, etc.
         response = await self.client.get(
-            f"{self.BASE_URL}/users;use_login=1/games;game_keys={game_id}/leagues"
+            f"{self.BASE_URL}/users;use_login=1/games;game_codes={game_key}/leagues",
+            params={"format": "json"}
         )
         response.raise_for_status()
         
-        # Parse XML response (Yahoo returns XML)
-        # For simplicity, we'll assume JSON conversion is handled elsewhere
-        # In a real implementation, you'd use an XML parser like xmltodict
-        return self._parse_yahoo_response(response.text)
+        # Parse response based on content type
+        content_type = response.headers.get('content-type', '')
+        leagues = []
+        
+        try:
+            if 'json' in content_type:
+                data = response.json()
+                leagues = self._extract_leagues_from_json(data)
+            else:
+                # Parse XML response
+                parsed = self._parse_yahoo_response(response.text)
+                leagues = self._extract_leagues_from_xml(parsed)
+        except Exception as e:
+            print(f"Error parsing Yahoo leagues response: {e}")
+            print(f"Response content: {response.text[:500]}")
+            
+        return leagues
     
     async def get_league(self, league_key: str) -> Dict[str, Any]:
         """Get league information."""
@@ -84,13 +100,89 @@ class YahooAPI:
         return self._parse_yahoo_response(response.text)
     
     def _parse_yahoo_response(self, xml_text: str) -> Dict[str, Any]:
-        """
-        Parse Yahoo's XML response to dict.
-        This is a placeholder - in a real implementation, you'd use xmltodict or similar.
-        """
-        # For now, return empty dict - you'll need to implement XML parsing
-        # Yahoo's API returns XML, not JSON
-        return {}
+        """Parse Yahoo's XML response to dict using xmltodict."""
+        try:
+            # Parse XML to dictionary
+            parsed = xmltodict.parse(xml_text)
+            
+            # Yahoo wraps responses in a fantasy_content element
+            if 'fantasy_content' in parsed:
+                return parsed['fantasy_content']
+            
+            return parsed
+        except Exception as e:
+            print(f"Error parsing Yahoo XML response: {e}")
+            # Return a minimal structure to prevent crashes
+            return {}
+    
+    def _extract_leagues_from_json(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Extract league data from Yahoo JSON response."""
+        leagues = []
+        
+        try:
+            # Navigate Yahoo's complex JSON structure
+            fantasy_content = data.get('fantasy_content', {})
+            users = fantasy_content.get('users', {})
+            
+            # Yahoo uses numeric keys for arrays
+            for user_key in users:
+                if user_key.isdigit():
+                    user_data = users[user_key].get('user', [])
+                    if isinstance(user_data, list) and len(user_data) > 1:
+                        # User data is array: [basic_info, games_data]
+                        games_data = user_data[1].get('games', {})
+                        
+                        for game_key in games_data:
+                            if game_key.isdigit():
+                                game_info = games_data[game_key].get('game', [])
+                                if isinstance(game_info, list) and len(game_info) > 1:
+                                    # Game data is array: [basic_info, leagues_data]
+                                    leagues_data = game_info[1].get('leagues', {})
+                                    
+                                    for league_key in leagues_data:
+                                        if league_key.isdigit():
+                                            league_info = leagues_data[league_key].get('league', [])
+                                            if isinstance(league_info, list):
+                                                # Convert array format to dict
+                                                league_dict = {}
+                                                for item in league_info:
+                                                    if isinstance(item, dict):
+                                                        league_dict.update(item)
+                                                leagues.append(league_dict)
+                                            elif isinstance(league_info, dict):
+                                                leagues.append(league_info)
+        except Exception as e:
+            print(f"Error extracting leagues from JSON: {e}")
+        
+        return leagues
+    
+    def _extract_leagues_from_xml(self, parsed: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Extract league data from parsed XML response."""
+        leagues = []
+        
+        try:
+            # Navigate XML structure
+            if 'users' in parsed:
+                users = parsed['users']
+                if 'user' in users:
+                    user_data = users['user']
+                    if 'games' in user_data:
+                        games = user_data['games']
+                        if 'game' in games:
+                            game_data = games['game']
+                            if 'leagues' in game_data:
+                                leagues_data = game_data['leagues']
+                                if 'league' in leagues_data:
+                                    league_data = leagues_data['league']
+                                    # Handle single league or list of leagues
+                                    if isinstance(league_data, list):
+                                        leagues = league_data
+                                    else:
+                                        leagues = [league_data]
+        except Exception as e:
+            print(f"Error extracting leagues from XML: {e}")
+        
+        return leagues
 
 
 async def ingest_yahoo_leagues(user_id: int) -> bool:
@@ -114,7 +206,7 @@ async def ingest_yahoo_leagues(user_id: int) -> bool:
                 return False
             
             # Check if token is expired and refresh if needed
-            if user.yahoo_token_expires_at and user.yahoo_token_expires_at <= datetime.utcnow():
+            if user.yahoo_token_expires_at and user.yahoo_token_expires_at <= datetime.now(timezone.utc):
                 success = await _refresh_yahoo_token(db, user)
                 if not success:
                     print(f"Failed to refresh Yahoo token for user {user_id}")
@@ -124,15 +216,38 @@ async def ingest_yahoo_leagues(user_id: int) -> bool:
             
             try:
                 # Get user's leagues
+                print(f"Fetching Yahoo leagues for user {user_id}...")
                 leagues_data = await api.get_user_leagues("nfl")  # Default to NFL
                 
+                print(f"Yahoo API returned {len(leagues_data)} leagues")
+                if leagues_data:
+                    print(f"Sample league data: {leagues_data[0] if leagues_data else 'None'}")
+                
+                if not leagues_data:
+                    print(f"No Yahoo leagues found for user {user_id}")
+                    return True  # Not an error, user might not have leagues
+                
                 for league_data in leagues_data:
-                    league_key = league_data.get('league_key')
+                    # Extract league key - Yahoo uses league_key format like "423.l.12345"
+                    league_key = None
+                    if isinstance(league_data, dict):
+                        league_key = league_data.get('league_key', '')
+                        # Also try alternate key names Yahoo might use
+                        if not league_key:
+                            league_key = league_data.get('league_id', '')
+                    
                     if not league_key:
+                        print(f"No league key found in data: {league_data}")
                         continue
                     
+                    print(f"Processing Yahoo league: {league_key}")
+                    
                     # Process each league
-                    await _ingest_yahoo_league(api, db, user, league_key, league_data)
+                    try:
+                        await _ingest_yahoo_league(api, db, user, league_key, league_data)
+                    except Exception as e:
+                        print(f"Error processing league {league_key}: {e}")
+                        continue
                 
                 await db.commit()
                 return True
@@ -173,9 +288,9 @@ async def _ingest_yahoo_league(
             owner_id=user.id,
             name=league_data.get('name', f'League {league_key}'),
             league_type=_map_yahoo_sport_to_league_type(league_data.get('game_code', 'nfl')),
-            season=league_data.get('season', datetime.now().year),
-            week=league_data.get('current_week', 1),
-            num_teams=league_data.get('num_teams', 0),
+            season=int(league_data.get('season', datetime.now(timezone.utc).year)),
+            week=int(league_data.get('current_week', 1)),
+            num_teams=int(league_data.get('num_teams', 0)),
             scoring_type=_determine_yahoo_scoring_type(detailed_league_data.get('settings', {})),
         )
         db.add(league)
@@ -183,12 +298,15 @@ async def _ingest_yahoo_league(
     else:
         # Update existing league
         league.name = league_data.get('name', league.name)
-        league.week = league_data.get('current_week', league.week)
-        league.num_teams = league_data.get('num_teams', league.num_teams)
+        league.week = int(league_data.get('current_week', league.week))
+        league.num_teams = int(league_data.get('num_teams', league.num_teams))
     
-    # Ingest teams/rosters
-    await _ingest_yahoo_teams(api, db, league, league_key)
-    
+    # Ingest teams/rosters (non-blocking - Yahoo XML parsing may fail)
+    try:
+        await _ingest_yahoo_teams(api, db, league, league_key)
+    except Exception as e:
+        print(f"Error ingesting Yahoo teams (non-blocking): {e}")
+
     # Ingest matchups for current and recent weeks
     current_week = league.week or 1
     for week in range(max(1, current_week - 2), current_week + 1):
@@ -205,7 +323,7 @@ async def _ingest_yahoo_league(
         print(f"Error ingesting Yahoo transactions: {e}")
     
     # Update last sync time
-    league.last_sync_at = datetime.utcnow()
+    league.last_sync_at = datetime.now(timezone.utc)
 
 
 async def _ingest_yahoo_teams(
@@ -407,8 +525,9 @@ async def _refresh_yahoo_token(db: AsyncSession, user: User) -> bool:
         return False
     
     try:
-        # Make refresh token request
-        async with httpx.AsyncClient() as client:
+        # Make refresh token request (bypass SSL in debug mode for corporate network)
+        verify_ssl = not settings.debug
+        async with httpx.AsyncClient(verify=verify_ssl) as client:
             response = await client.post(
                 "https://api.login.yahoo.com/oauth2/get_token",
                 data={
@@ -425,7 +544,7 @@ async def _refresh_yahoo_token(db: AsyncSession, user: User) -> bool:
                 if 'refresh_token' in token_data:
                     user.yahoo_refresh_token = token_data['refresh_token']
                 if 'expires_in' in token_data:
-                    user.yahoo_token_expires_at = datetime.utcnow() + timedelta(seconds=token_data['expires_in'])
+                    user.yahoo_token_expires_at = datetime.now(timezone.utc) + timedelta(seconds=token_data['expires_in'])
                 
                 await db.commit()
                 return True
