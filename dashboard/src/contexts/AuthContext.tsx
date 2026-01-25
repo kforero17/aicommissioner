@@ -3,10 +3,13 @@
 import { createContext, useContext, useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+
 interface User {
   id: string
   email: string
   name?: string
+  username?: string
   hasCompletedOnboarding?: boolean
 }
 
@@ -17,6 +20,7 @@ interface AuthContextType {
   loginWithProvider: (provider: string) => Promise<void>
   logout: () => void
   isAuthenticated: boolean
+  refreshUser: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
@@ -26,51 +30,72 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true)
   const router = useRouter()
 
-  useEffect(() => {
-    // Check for existing session
-    const checkAuth = () => {
-      const savedUser = localStorage.getItem('user')
-      if (savedUser) {
-        setUser(JSON.parse(savedUser))
+  const checkAuthWithBackend = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/auth/me`, {
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      })
+
+      if (response.ok) {
+        const userData = await response.json()
+        const mappedUser: User = {
+          id: String(userData.id),
+          email: userData.email || '',
+          name: userData.username,
+          username: userData.username,
+          hasCompletedOnboarding: true
+        }
+        setUser(mappedUser)
+        return mappedUser
       }
+    } catch {
+      // Auth check failed - user not logged in
+    }
+    setUser(null)
+    return null
+  }
+
+  useEffect(() => {
+    // Check auth status with backend on mount
+    const checkAuth = async () => {
+      await checkAuthWithBackend()
       setLoading(false)
     }
     checkAuth()
   }, [])
 
   const login = async (email: string) => {
-    // Simulate API call
+    // Magic link login - would send email via backend
     await new Promise(resolve => setTimeout(resolve, 1500))
-    
-    const newUser: User = {
-      id: Math.random().toString(36).substr(2, 9),
-      email,
-      hasCompletedOnboarding: false
-    }
-    
-    setUser(newUser)
-    localStorage.setItem('user', JSON.stringify(newUser))
+    // After magic link is clicked, backend sets cookie and we refresh user
+    await checkAuthWithBackend()
   }
 
   const loginWithProvider = async (provider: string) => {
-    // Simulate OAuth flow
-    await new Promise(resolve => setTimeout(resolve, 1500))
-    
-    const newUser: User = {
-      id: Math.random().toString(36).substr(2, 9),
-      email: `user@${provider}.com`,
-      name: `${provider} User`,
-      hasCompletedOnboarding: false
+    // Redirect to OAuth provider
+    if (provider === 'yahoo') {
+      window.location.href = `${API_BASE}/auth/yahoo/login`
     }
-    
-    setUser(newUser)
-    localStorage.setItem('user', JSON.stringify(newUser))
   }
 
-  const logout = () => {
+  const logout = async () => {
+    try {
+      await fetch(`${API_BASE}/auth/logout`, {
+        method: 'POST',
+        credentials: 'include'
+      })
+    } catch {
+      // Logout failed, but clear local state anyway
+    }
     setUser(null)
-    localStorage.removeItem('user')
     router.push('/')
+  }
+
+  const refreshUser = async () => {
+    await checkAuthWithBackend()
   }
 
   const value = {
@@ -79,7 +104,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     login,
     loginWithProvider,
     logout,
-    isAuthenticated: !!user
+    isAuthenticated: !!user,
+    refreshUser
   }
 
   return (

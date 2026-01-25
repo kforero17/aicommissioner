@@ -1,18 +1,19 @@
 """Admin routes for managing leagues and running recaps."""
-from typing import Optional, List
+from typing import Optional, List, Any, Dict
+from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
+from celery.result import AsyncResult
 
 from database.connection import get_db
 from models.user import User
 from models.league import League, ProviderType
 from api.routes.auth import get_current_user
-from services.recap_service import run_power_rankings, run_waiver_recap
-from ingestors.sleeper_ingestor import ingest_sleeper_league
-from ingestors.yahoo_ingestor import ingest_yahoo_leagues
+from schedulers.tasks import sync_specific_league, generate_manual_recap
+from ai_text.text_formatter import TextFormatter
 
 router = APIRouter()
 
@@ -130,15 +131,36 @@ async def create_league(
     )
 
 
+def get_current_nfl_season() -> int:
+    """Get the current NFL season year based on today's date."""
+    today = datetime.now()
+    # NFL season starts in September, so if we're before September,
+    # the current season is the previous year
+    if today.month < 9:
+        return today.year - 1
+    return today.year
+
+
 @router.get("/leagues", response_model=List[LeagueResponse])
 async def get_user_leagues(
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    all_seasons: bool = False
 ):
-    """Get all leagues for the current user."""
-    result = await db.execute(
-        select(League).filter(League.owner_id == current_user.id)
-    )
+    """Get leagues for the current user.
+
+    By default, only returns leagues from the current NFL season.
+    Set all_seasons=true to return all historical leagues.
+    """
+    query = select(League).filter(League.owner_id == current_user.id)
+
+    if not all_seasons:
+        current_season = get_current_nfl_season()
+        query = query.filter(League.season >= current_season)
+
+    query = query.order_by(League.season.desc(), League.name)
+
+    result = await db.execute(query)
     leagues = result.scalars().all()
     
     return [
@@ -240,11 +262,31 @@ async def delete_league(
 @router.post("/leagues/{league_id}/sync")
 async def sync_league_data(
     league_id: int,
-    background_tasks: BackgroundTasks,
+    week: Optional[int] = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
-):
-    """Manually sync league data from provider."""
+) -> Dict[str, Any]:
+    """
+    Manually sync league data from provider.
+
+    Dispatches a Celery task to sync league data and returns the task ID
+    for polling the sync progress.
+
+    Args:
+        league_id: ID of the league to sync
+        week: Optional week number (currently unused, reserved for future use)
+        current_user: Authenticated user from dependency injection
+        db: Database session from dependency injection
+
+    Returns:
+        Dict containing:
+        - task_id: Celery task ID for polling status
+        - message: Status message
+        - status: Initial task status ("pending")
+
+    Raises:
+        HTTPException: If league not found or user doesn't own the league
+    """
     result = await db.execute(
         select(League).filter(
             League.id == league_id,
@@ -252,30 +294,103 @@ async def sync_league_data(
         )
     )
     league = result.scalar_one_or_none()
-    
+
     if not league:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="League not found"
         )
-    
-    # Add background task to sync data
-    if league.provider == ProviderType.SLEEPER:
-        background_tasks.add_task(ingest_sleeper_league, league.provider_league_id)
-    elif league.provider == ProviderType.YAHOO:
-        background_tasks.add_task(ingest_yahoo_leagues, current_user.id)
-    
-    return {"message": "League sync started"}
+
+    # Dispatch Celery task to sync the league
+    task = sync_specific_league.apply_async(
+        args=[league_id, league.provider.value, league.provider_league_id]
+    )
+
+    return {
+        "task_id": task.id,
+        "message": "League sync started",
+        "status": "pending"
+    }
+
+
+@router.get("/tasks/{task_id}")
+async def get_task_status(
+    task_id: str,
+    current_user: User = Depends(get_current_user)
+) -> Dict[str, Any]:
+    """
+    Poll task status for a Celery task.
+
+    Returns current status and result/error information for tracking
+    async task progress (sync operations, recap generation, etc.).
+
+    Args:
+        task_id: Celery task ID returned from async operations
+        current_user: Authenticated user from dependency injection
+
+    Returns:
+        Dict containing:
+        - task_id: The task identifier
+        - status: Task status (PENDING, STARTED, SUCCESS, FAILURE, RETRY)
+        - result: Task result if SUCCESS
+        - error: Error message if FAILURE
+        - progress: Progress metadata if STARTED
+
+    Example responses:
+        Pending: {"task_id": "abc-123", "status": "PENDING"}
+        Success: {"task_id": "abc-123", "status": "SUCCESS", "result": {...}}
+        Failure: {"task_id": "abc-123", "status": "FAILURE", "error": "..."}
+    """
+    task_result = AsyncResult(task_id)
+
+    response: Dict[str, Any] = {
+        "task_id": task_id,
+        "status": task_result.status,
+    }
+
+    if task_result.successful():
+        response["result"] = task_result.result
+    elif task_result.failed():
+        # Get error information
+        error_info = task_result.info
+        if isinstance(error_info, Exception):
+            response["error"] = str(error_info)
+        else:
+            response["error"] = str(error_info) if error_info else "Task failed"
+    elif task_result.status == "STARTED":
+        # Include progress information if available
+        response["progress"] = task_result.info if task_result.info else {}
+
+    return response
 
 
 @router.post("/recaps/power-rankings")
 async def run_manual_power_rankings(
     request: RecapRequest,
-    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
-):
-    """Manually run power rankings recap for a league."""
+) -> Dict[str, Any]:
+    """
+    Manually run power rankings recap for a league.
+
+    Dispatches a Celery task to generate power rankings and returns
+    the task ID for polling the generation progress.
+
+    Args:
+        request: RecapRequest containing league_id and optional week
+        current_user: Authenticated user from dependency injection
+        db: Database session from dependency injection
+
+    Returns:
+        Dict containing:
+        - task_id: Celery task ID for polling status
+        - message: Status message
+        - status: Initial task status ("pending")
+
+    Raises:
+        HTTPException: If league not found, user doesn't own league,
+                      or power rankings are disabled
+    """
     result = await db.execute(
         select(League).filter(
             League.id == request.league_id,
@@ -283,33 +398,58 @@ async def run_manual_power_rankings(
         )
     )
     league = result.scalar_one_or_none()
-    
+
     if not league:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="League not found"
         )
-    
+
     if not league.enable_power_rankings:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Power rankings are disabled for this league"
         )
-    
-    # Add background task to run power rankings
-    background_tasks.add_task(run_power_rankings, league.id, request.week)
-    
-    return {"message": "Power rankings recap started"}
+
+    # Dispatch Celery task to generate power rankings
+    task = generate_manual_recap.apply_async(
+        args=[league.id, "power_rankings", request.week]
+    )
+
+    return {
+        "task_id": task.id,
+        "message": "Power rankings recap started",
+        "status": "pending"
+    }
 
 
 @router.post("/recaps/waiver-recap")
 async def run_manual_waiver_recap(
     request: RecapRequest,
-    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
-):
-    """Manually run waiver recap for a league."""
+) -> Dict[str, Any]:
+    """
+    Manually run waiver recap for a league.
+
+    Dispatches a Celery task to generate waiver recap and returns
+    the task ID for polling the generation progress.
+
+    Args:
+        request: RecapRequest containing league_id and optional week
+        current_user: Authenticated user from dependency injection
+        db: Database session from dependency injection
+
+    Returns:
+        Dict containing:
+        - task_id: Celery task ID for polling status
+        - message: Status message
+        - status: Initial task status ("pending")
+
+    Raises:
+        HTTPException: If league not found, user doesn't own league,
+                      or waiver recaps are disabled
+    """
     result = await db.execute(
         select(League).filter(
             League.id == request.league_id,
@@ -317,20 +457,53 @@ async def run_manual_waiver_recap(
         )
     )
     league = result.scalar_one_or_none()
-    
+
     if not league:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="League not found"
         )
-    
+
     if not league.enable_waiver_recaps:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Waiver recaps are disabled for this league"
         )
-    
-    # Add background task to run waiver recap
-    background_tasks.add_task(run_waiver_recap, league.id, request.week)
-    
-    return {"message": "Waiver recap started"}
+
+    # Dispatch Celery task to generate waiver recap
+    task = generate_manual_recap.apply_async(
+        args=[league.id, "waiver_recap", request.week]
+    )
+
+    return {
+        "task_id": task.id,
+        "message": "Waiver recap started",
+        "status": "pending"
+    }
+
+
+@router.get("/monitoring/llm-circuit-status")
+async def get_llm_circuit_status(
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get LLM circuit breaker status for monitoring.
+
+    Returns the current state of circuit breakers for all LLM providers,
+    including failure counts, state, and when circuits were opened.
+
+    Useful for:
+    - Monitoring dashboards
+    - Alerting on circuit opens
+    - Debugging LLM issues
+    - Understanding service health
+    """
+    # Create a formatter instance to access circuit breaker status
+    formatter = TextFormatter()
+    status = formatter.get_circuit_status()
+
+    return {
+        "status": "ok",
+        "circuit_breakers": status,
+        "timestamp": datetime.utcnow().isoformat()
+    }

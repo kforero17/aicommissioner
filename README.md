@@ -31,6 +31,58 @@ A comprehensive SaaS platform that seamlessly integrates with fantasy sports lea
 - **Multiple Styles**: Standard, emoji, formal, casual formatting options
 - **Persona Support**: Witty, professional, roastmaster, hype, analyst personas
 
+## Security
+
+### ⚠️ CRITICAL: First-Time Setup Security
+
+**BEFORE YOU START**, you must regenerate all credentials. Previous credentials may have been exposed:
+
+1. **Yahoo OAuth Credentials** (REQUIRED)
+   - Go to https://developer.yahoo.com/apps/
+   - Delete any existing app (if you had one before)
+   - Create a NEW app and get fresh credentials
+   - Update `YAHOO_CLIENT_ID` and `YAHOO_CLIENT_SECRET` in `.env`
+
+2. **Encryption Keys** (ALREADY GENERATED)
+   - ✅ New `SECRET_KEY` has been generated
+   - ✅ New `ENCRYPTION_KEY` has been generated
+   - These are already in your `.env` file
+
+3. **Environment Configuration**
+   ```bash
+   # Copy the example file if starting fresh
+   cp .env.example .env
+
+   # Edit .env and replace placeholder values:
+   # - YAHOO_CLIENT_ID: Get from Yahoo Developer Portal
+   # - YAHOO_CLIENT_SECRET: Get from Yahoo Developer Portal
+   # - DATABASE_URL: Your PostgreSQL connection string
+   ```
+
+### Security Best Practices
+
+✅ **What's Already Secured:**
+- HTTP-only cookies for JWT tokens (prevents XSS attacks)
+- OAuth tokens encrypted at rest using Fernet encryption
+- Encryption key validation on startup
+- Debug mode disabled by default
+- SSL certificate files properly ignored in git
+
+⚠️ **What You Need to Do:**
+- [ ] Regenerate Yahoo OAuth credentials at https://developer.yahoo.com/apps/
+- [ ] Never commit `.env` file to git (already in `.gitignore`)
+- [ ] Use strong database passwords in production
+- [ ] Enable HTTPS in production (use Let's Encrypt or cloud provider certs)
+- [ ] Set `DEBUG=false` in production (already default)
+- [ ] Review and rotate credentials periodically
+
+### Sensitive Files (Never Commit These)
+The following files are automatically ignored by `.gitignore`:
+- `.env` - Environment variables with secrets
+- `cert.pem`, `key.pem` - SSL certificates (for local dev only)
+- `cookies.txt` - OAuth session data
+- `*.key`, `*.crt` - Any certificate files
+
 ## Architecture
 
 ```

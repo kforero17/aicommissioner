@@ -13,6 +13,7 @@ from models.league import League, ProviderType, LeagueType
 from models.roster import Roster
 from models.matchup import Matchup
 from models.transaction import Transaction, TransactionType, TransactionStatus
+from models.user import User
 from config import settings
 
 
@@ -22,7 +23,9 @@ class SleeperAPI:
     BASE_URL = "https://api.sleeper.app/v1"
     
     def __init__(self):
-        self.client = httpx.AsyncClient(timeout=30.0)
+        # Bypass SSL verification in debug mode (corporate network)
+        verify_ssl = not settings.debug
+        self.client = httpx.AsyncClient(timeout=30.0, verify=verify_ssl)
     
     async def close(self):
         """Close the HTTP client."""
@@ -65,18 +68,45 @@ class SleeperAPI:
         return response.json()
 
 
-async def ingest_sleeper_league(league_id: str) -> bool:
+async def _find_sleeper_league_owner(db: AsyncSession, league_id: str) -> Optional[int]:
+    """
+    Find which user owns a Sleeper league by checking sleeper_leagues field.
+
+    Args:
+        db: Database session
+        league_id: Sleeper league ID
+
+    Returns:
+        User ID if found, None otherwise
+    """
+    result = await db.execute(select(User))
+    users = result.scalars().all()
+
+    for user in users:
+        if user.sleeper_leagues:
+            try:
+                league_ids = json.loads(user.sleeper_leagues)
+                if league_id in league_ids:
+                    return user.id
+            except json.JSONDecodeError:
+                continue
+
+    return None
+
+
+async def ingest_sleeper_league(league_id: str, owner_id: Optional[int] = None) -> bool:
     """
     Ingest all data for a Sleeper league.
-    
+
     Args:
         league_id: Sleeper league ID
-        
+        owner_id: Optional user ID who owns the league
+
     Returns:
         bool: True if successful, False otherwise
     """
     api = SleeperAPI()
-    
+
     try:
         async with AsyncSessionLocal() as db:
             # Get or create league record
@@ -87,13 +117,19 @@ async def ingest_sleeper_league(league_id: str) -> bool:
                 )
             )
             league = result.scalar_one_or_none()
-            
+
             # Fetch league data from Sleeper
             league_data = await api.get_league(league_id)
-            
+
             if not league:
-                # Create new league record if it doesn't exist
-                # This happens when someone adds a Sleeper league ID
+                # Determine owner_id if not provided
+                if owner_id is None:
+                    owner_id = await _find_sleeper_league_owner(db, league_id)
+                    if owner_id is None:
+                        print(f"Warning: Could not determine owner for Sleeper league {league_id}, defaulting to user 1")
+                        owner_id = 1
+
+                # Create new league record
                 league = League(
                     provider=ProviderType.SLEEPER,
                     provider_league_id=league_id,
@@ -103,10 +139,10 @@ async def ingest_sleeper_league(league_id: str) -> bool:
                     week=league_data.get('settings', {}).get('leg', 1),
                     num_teams=league_data.get('total_rosters', 0),
                     scoring_type=_determine_scoring_type(league_data.get('scoring_settings', {})),
-                    owner_id=1,  # This will need to be set properly based on who added the league
+                    owner_id=owner_id,
                 )
                 db.add(league)
-                await db.flush()  # Get the ID
+                await db.flush()
             else:
                 # Update existing league
                 league.name = league_data.get('name', league.name)
@@ -135,7 +171,7 @@ async def ingest_sleeper_league(league_id: str) -> bool:
                     continue
             
             # Update last sync time
-            league.last_sync_at = datetime.utcnow()
+            league.last_sync_at = datetime.now()
             
             await db.commit()
             return True

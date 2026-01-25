@@ -1,29 +1,8 @@
 import type { NextConfig } from 'next'
 
+// Simple config - proxy will be handled by custom server.js
 const nextConfig: NextConfig = {
-  async rewrites() {
-    const backendUrl = process.env.BACKEND_URL || 'http://localhost:8000'
-    const normalizedBackendUrl = backendUrl.replace(/\/$/, '')
-    
-    return [
-      {
-        source: '/api/:path*',
-        destination: `${normalizedBackendUrl}/api/:path*`,
-      },
-      {
-        source: '/auth/:path*',
-        destination: `${normalizedBackendUrl}/auth/:path*`,
-      },
-      {
-        source: '/connect/:path*',
-        destination: `${normalizedBackendUrl}/connect/:path*`,
-      },
-      {
-        source: '/admin/:path*',
-        destination: `${normalizedBackendUrl}/admin/:path*`,
-      },
-    ]
-  },
+  // No rewrites needed - custom server handles proxying
 }
 
 export default nextConfig

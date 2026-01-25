@@ -1,7 +1,11 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
+
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+const OAUTH_URL = process.env.NEXT_PUBLIC_OAUTH_URL || API_BASE_URL
 
 export default function ConnectPage() {
   const [activeTab, setActiveTab] = useState<'yahoo' | 'sleeper' | 'espn'>('yahoo')
@@ -12,10 +16,100 @@ export default function ConnectPage() {
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState('')
   const [step, setStep] = useState(1)
+  const [yahooStatus, setYahooStatus] = useState<any>(null)
+  const [checkingStatus, setCheckingStatus] = useState(false)
+  const [debugInfo, setDebugInfo] = useState<any>(null)
+  const [showDebug, setShowDebug] = useState(false)
+  const router = useRouter()
+  const searchParams = useSearchParams()
+
+  // Check Yahoo connection status on load
+  useEffect(() => {
+    checkYahooStatus()
+  }, [])
+
+  // Handle Yahoo OAuth callback
+  useEffect(() => {
+    const yahooConnected = searchParams.get('yahoo_connected')
+
+    if (yahooConnected === 'true') {
+      // Token is now stored in HTTP-only secure cookie by backend
+      setMessage('Yahoo account connected successfully!')
+      setStep(2)
+      // Recheck status after connection
+      setTimeout(() => checkYahooStatus(), 1000)
+
+      // Clean up URL
+      router.replace('/connect', undefined)
+    }
+  }, [searchParams, router])
+
+  const checkYahooStatus = async () => {
+    setCheckingStatus(true)
+    try {
+      const response = await fetch(`${API_BASE_URL}/auth/yahoo/status`, {
+        credentials: 'include'
+      })
+
+      if (response.ok) {
+        const status = await response.json()
+        setYahooStatus(status)
+        if (status.connected && status.leagues.length > 0) {
+          setStep(2)
+        }
+      }
+    } catch (error) {
+      console.error('Error checking Yahoo status:', error)
+    } finally {
+      setCheckingStatus(false)
+    }
+  }
+
+  const triggerYahooImport = async () => {
+    setLoading(true)
+    try {
+      const response = await fetch(`${API_BASE_URL}/auth/yahoo/import-leagues`, {
+        method: 'POST',
+        credentials: 'include'
+      })
+
+      if (response.ok) {
+        setMessage('Yahoo league import started...')
+        setTimeout(() => checkYahooStatus(), 3000)
+      } else {
+        setMessage('Failed to import Yahoo leagues')
+      }
+    } catch (error) {
+      setMessage('Error importing Yahoo leagues')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const runYahooDebug = async () => {
+    setCheckingStatus(true)
+    try {
+      const response = await fetch(`${API_BASE_URL}/auth/yahoo/debug`, {
+        credentials: 'include'
+      })
+
+      if (response.ok) {
+        const debug = await response.json()
+        setDebugInfo(debug)
+        setShowDebug(true)
+      } else {
+        setMessage('Failed to run debug check')
+      }
+    } catch (error) {
+      setMessage('Error running debug check')
+    } finally {
+      setCheckingStatus(false)
+    }
+  }
 
   const handleYahooConnect = () => {
-    // Redirect to Yahoo OAuth start
-    window.location.href = '/auth/yahoo/start'
+    // Redirect to Yahoo OAuth start via tunnel URL to preserve session
+    window.location.href = `${OAUTH_URL}/auth/yahoo/start`
   }
 
   const handleSleeperConnect = async (e: React.FormEvent) => {
@@ -188,16 +282,72 @@ export default function ConnectPage() {
                     </ul>
                   </div>
 
-                  <button
-                    onClick={handleYahooConnect}
-                    className="w-full bg-purple-600 text-white py-4 px-6 rounded-lg hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 transition duration-200 text-lg font-medium"
-                  >
-                    Connect with Yahoo
-                  </button>
-                  
-                  <p className="text-xs text-gray-500 text-center mt-4">
-                    We'll redirect you to Yahoo to securely authorize access to your leagues
-                  </p>
+                  {yahooStatus?.connected ? (
+                    <div className="space-y-4">
+                      <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                        <div className="flex items-center">
+                          <svg className="w-5 h-5 text-green-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                          </svg>
+                          <span className="text-green-700 font-medium">Yahoo Connected</span>
+                        </div>
+                        <p className="text-green-600 text-sm mt-1">
+                          {yahooStatus.leagues.length} league(s) imported
+                        </p>
+                      </div>
+                      
+                      {yahooStatus.leagues.length === 0 && (
+                        <div className="space-y-3">
+                          <button
+                            onClick={triggerYahooImport}
+                            disabled={loading}
+                            className={`w-full py-3 px-4 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 transition duration-200 ${
+                              loading 
+                                ? 'bg-gray-400 cursor-not-allowed' 
+                                : 'bg-purple-600 hover:bg-purple-700'
+                            }`}
+                          >
+                            {loading ? 'Importing Leagues...' : 'Import Yahoo Leagues'}
+                          </button>
+                          
+                          <button
+                            onClick={runYahooDebug}
+                            disabled={checkingStatus}
+                            className="w-full py-2 px-4 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 transition duration-200 text-sm"
+                          >
+                            {checkingStatus ? 'Running Debug...' : 'Debug Connection'}
+                          </button>
+                        </div>
+                      )}
+                      
+                      {yahooStatus.leagues.length > 0 && (
+                        <button
+                          onClick={() => setStep(2)}
+                          className="w-full bg-green-600 text-white py-3 px-4 rounded-lg hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 transition duration-200"
+                        >
+                          Continue to Team Selection
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    <>
+                      <button
+                        onClick={handleYahooConnect}
+                        disabled={checkingStatus}
+                        className={`w-full py-4 px-6 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 transition duration-200 text-lg font-medium ${
+                          checkingStatus 
+                            ? 'bg-gray-400 cursor-not-allowed' 
+                            : 'bg-purple-600 hover:bg-purple-700'
+                        }`}
+                      >
+                        {checkingStatus ? 'Checking Status...' : 'Connect with Yahoo'}
+                      </button>
+                      
+                      <p className="text-xs text-gray-500 text-center mt-4">
+                        We'll redirect you to Yahoo to securely authorize access to your leagues
+                      </p>
+                    </>
+                  )}
                 </div>
               )}
 
@@ -315,40 +465,120 @@ export default function ConnectPage() {
                   {message}
                 </div>
               )}
+
+              {/* Debug Information */}
+              {showDebug && debugInfo && (
+                <div className="mt-6 bg-gray-50 rounded-lg p-4">
+                  <div className="flex justify-between items-center mb-3">
+                    <h4 className="font-medium text-gray-900">Debug Information</h4>
+                    <button 
+                      onClick={() => setShowDebug(false)}
+                      className="text-gray-500 hover:text-gray-700"
+                    >
+                      ×
+                    </button>
+                  </div>
+                  <div className="text-xs font-mono bg-white p-3 rounded border overflow-auto max-h-64">
+                    <pre>{JSON.stringify(debugInfo, null, 2)}</pre>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
           {step === 2 && (
-            <div className="max-w-2xl mx-auto text-center">
-              <div className="bg-white rounded-xl shadow-lg p-8">
-                <div className="mb-6">
-                  <div className="mx-auto h-16 w-16 bg-green-100 rounded-full flex items-center justify-center mb-4">
-                    <svg className="h-8 w-8 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                    </svg>
-                  </div>
-                  <h2 className="text-2xl font-bold text-gray-900 mb-2">League Connected!</h2>
-                  <p className="text-gray-600">
-                    Your league has been successfully connected. Next, let's verify your team and set up your preferences.
-                  </p>
-                </div>
-                
-                <div className="space-y-4">
-                  <Link 
-                    href="/settings/onboarding"
-                    className="w-full bg-blue-600 text-white py-4 px-6 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition duration-200 text-lg font-medium inline-block"
-                  >
-                    Continue Setup
-                  </Link>
-                  
-                  <Link 
-                    href="/demo"
-                    className="w-full bg-gray-100 text-gray-700 py-4 px-6 rounded-lg hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 transition duration-200 text-lg font-medium inline-block"
-                  >
-                    See Demo First
-                  </Link>
-                </div>
+            <div className="max-w-2xl mx-auto">
+              <div className="text-center mb-8">
+                <h2 className="text-3xl font-bold text-gray-900 mb-2">Verify Your Team</h2>
+                <p className="text-gray-600">
+                  Select your team from the list below
+                </p>
               </div>
+
+              {yahooStatus?.leagues && yahooStatus.leagues.length > 0 ? (
+                <div className="space-y-6">
+                  {yahooStatus.leagues.map((league: any, leagueIndex: number) => (
+                    <div key={league.id} className="bg-white rounded-xl shadow-lg p-6">
+                      <h3 className="text-xl font-semibold text-gray-900 mb-4">
+                        League: {league.name} - {league.provider_league_id}
+                      </h3>
+                      
+                      <div className="text-sm text-gray-500 mb-4">
+                        Season: {league.season} • Last sync: {league.last_sync_at ? new Date(league.last_sync_at).toLocaleDateString() : 'Never'}
+                      </div>
+
+                      {/* TODO: Show actual teams from the league */}
+                      <div className="space-y-3">
+                        <p className="text-gray-600">
+                          Teams will be loaded after league sync is complete. 
+                        </p>
+                        <button
+                          onClick={triggerYahooImport}
+                          disabled={loading}
+                          className={`w-full py-2 px-4 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition duration-200 ${
+                            loading 
+                              ? 'bg-gray-400 cursor-not-allowed' 
+                              : 'bg-blue-600 hover:bg-blue-700'
+                          }`}
+                        >
+                          {loading ? 'Syncing League Data...' : 'Sync League Data'}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+
+                  <div className="space-y-4 pt-4">
+                    <Link 
+                      href="/dashboard"
+                      className="w-full bg-green-600 text-white py-4 px-6 rounded-lg hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 transition duration-200 text-lg font-medium inline-block text-center"
+                    >
+                      Continue to Dashboard
+                    </Link>
+                    
+                    <Link 
+                      href="/demo"
+                      className="w-full bg-gray-100 text-gray-700 py-4 px-6 rounded-lg hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 transition duration-200 text-lg font-medium inline-block text-center"
+                    >
+                      See Demo First
+                    </Link>
+                  </div>
+                </div>
+              ) : (
+                <div className="bg-white rounded-xl shadow-lg p-8 text-center">
+                  <div className="mb-6">
+                    <div className="mx-auto h-16 w-16 bg-yellow-100 rounded-full flex items-center justify-center mb-4">
+                      <svg className="h-8 w-8 text-yellow-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                      </svg>
+                    </div>
+                    <h3 className="text-xl font-semibold text-gray-900 mb-2">No Leagues Found</h3>
+                    <p className="text-gray-600 mb-6">
+                      We couldn't find any leagues in your Yahoo account. Make sure you're in at least one active fantasy league.
+                    </p>
+                    
+                    <div className="space-y-3">
+                      <button
+                        onClick={triggerYahooImport}
+                        disabled={loading}
+                        className={`w-full py-3 px-4 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 transition duration-200 ${
+                          loading 
+                            ? 'bg-gray-400 cursor-not-allowed' 
+                            : 'bg-purple-600 hover:bg-purple-700'
+                        }`}
+                      >
+                        {loading ? 'Checking Again...' : 'Refresh League List'}
+                      </button>
+                      
+                      <button
+                        onClick={() => setStep(1)}
+                        className="w-full bg-gray-100 text-gray-700 py-3 px-4 rounded-lg hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 transition duration-200"
+                      >
+                        Back to Connection
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>

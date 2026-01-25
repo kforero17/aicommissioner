@@ -8,14 +8,22 @@ from anthropic import Anthropic
 
 from config import settings
 from ai_text.summary_generator import WeeklySummary
+from ai_text.llm_handler import LLMHandler, RecapResult
 
 
 class TextFormatter:
     """Format structured summaries into readable text."""
-    
+
     def __init__(self):
         self.openai_client = openai.AsyncOpenAI(api_key=settings.openai_api_key) if settings.openai_api_key else None
         self.anthropic_client = Anthropic(api_key=settings.anthropic_api_key) if settings.anthropic_api_key else None
+
+        # Initialize LLM handler with robust error handling
+        self.llm_handler = LLMHandler(
+            openai_client=self.openai_client,
+            anthropic_client=self.anthropic_client,
+            deterministic_fallback=self.render_deterministic
+        )
     
     def render_deterministic(self, summary: WeeklySummary, style: str = "standard") -> str:
         """
@@ -37,36 +45,55 @@ class TextFormatter:
         else:
             return self._render_standard_style(summary)
     
+    async def generate_recap(
+        self,
+        summary: WeeklySummary,
+        style: str = "standard",
+        persona: Optional[str] = None,
+        provider: str = "openai"
+    ) -> RecapResult:
+        """
+        Generate recap with robust LLM error handling.
+
+        This is the new primary method for generating recaps with complete
+        error handling, circuit breaker, retries, and deterministic fallback.
+
+        Args:
+            summary: Weekly summary data
+            style: Base style template for deterministic rendering
+            persona: AI persona ("witty", "professional", "roastmaster", "hype")
+            provider: AI provider ("openai" or "anthropic")
+
+        Returns:
+            RecapResult with text and metadata (mode, warnings, latency, etc.)
+        """
+        return await self.llm_handler.generate_recap(summary, style, persona, provider)
+
     async def render_llm(
-        self, 
-        summary: WeeklySummary, 
+        self,
+        summary: WeeklySummary,
         style: str = "standard",
         persona: Optional[str] = None,
         provider: str = "openai"
     ) -> str:
         """
         AI-powered rendering with personality and style.
-        
+
+        DEPRECATED: Use generate_recap() instead for robust error handling.
+        This method is maintained for backward compatibility but now uses
+        the robust LLM handler under the hood.
+
         Args:
             summary: Weekly summary data
             style: Base style template
             persona: AI persona ("witty", "professional", "roastmaster", "hype")
             provider: AI provider ("openai" or "anthropic")
-            
+
         Returns:
-            AI-generated formatted text
+            AI-generated formatted text (or deterministic fallback)
         """
-        # Build prompt
-        base_text = self.render_deterministic(summary, style)
-        prompt = self._build_llm_prompt(summary, base_text, persona or style)
-        
-        if provider == "anthropic" and self.anthropic_client:
-            return await self._render_with_anthropic(prompt)
-        elif provider == "openai" and self.openai_client:
-            return await self._render_with_openai(prompt)
-        else:
-            # Fallback to deterministic if AI not available
-            return self.render_deterministic(summary, style)
+        result = await self.llm_handler.generate_recap(summary, style, persona, provider)
+        return result.text
     
     def _render_standard_style(self, summary: WeeklySummary) -> str:
         """Standard, clean recap format."""
@@ -249,60 +276,11 @@ class TextFormatter:
             return f"(↓{abs(movement)})"
         else:
             return "(→)"
-    
-    def _build_llm_prompt(self, summary: WeeklySummary, base_text: str, persona: str) -> str:
-        """Build prompt for LLM rendering."""
-        persona_instructions = {
-            "witty": "Rewrite this fantasy football recap with wit, humor, and clever observations. Use puns, jokes, and playful roasting of teams. Keep it fun and entertaining.",
-            "professional": "Rewrite this fantasy football recap in a professional sports journalism style. Use proper analysis, statistics, and formal language.",
-            "roastmaster": "Rewrite this fantasy football recap with savage roasts and trash talk. Really go after the losing teams and bad performances. Be brutal but funny.",
-            "hype": "Rewrite this fantasy football recap with maximum energy and excitement. Use lots of caps, exclamation points, and hype up everything. Make it feel like a sports center highlight reel.",
-            "analyst": "Rewrite this fantasy football recap with deep fantasy analysis and insights. Focus on trends, predictions, and strategic observations."
-        }
-        
-        instruction = persona_instructions.get(persona, "Rewrite this fantasy football recap in an engaging, entertaining style.")
-        
-        return f"""
-{instruction}
 
-Keep the same factual information but make it more engaging. The recap should be 200-400 words and formatted for a group chat message.
+    def get_circuit_status(self) -> dict:
+        """Get circuit breaker status for monitoring.
 
-Original recap:
-{base_text}
-
-Rewritten recap:
-"""
-    
-    async def _render_with_openai(self, prompt: str) -> str:
-        """Render text using OpenAI."""
-        try:
-            response = await self.openai_client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": "You are a fantasy football expert who writes engaging recaps for league group chats."},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=500,
-                temperature=0.8
-            )
-            return response.choices[0].message.content.strip()
-        except Exception as e:
-            print(f"Error with OpenAI rendering: {e}")
-            return "Error generating AI recap"
-    
-    async def _render_with_anthropic(self, prompt: str) -> str:
-        """Render text using Anthropic Claude."""
-        try:
-            message = await asyncio.to_thread(
-                self.anthropic_client.messages.create,
-                model="claude-3-haiku-20240307",
-                max_tokens=500,
-                temperature=0.8,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ]
-            )
-            return message.content[0].text.strip()
-        except Exception as e:
-            print(f"Error with Anthropic rendering: {e}")
-            return "Error generating AI recap"
+        Returns:
+            Dictionary with circuit breaker status for each provider
+        """
+        return self.llm_handler.get_circuit_status()

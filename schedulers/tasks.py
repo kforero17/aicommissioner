@@ -197,7 +197,7 @@ async def _sync_all_leagues():
         # Sync Sleeper leagues
         for league in sleeper_leagues:
             try:
-                success = await ingest_sleeper_league(league.provider_league_id)
+                success = await ingest_sleeper_league(league.provider_league_id, owner_id=league.owner_id)
                 if success:
                     results["successful"] += 1
                     # Update last sync time

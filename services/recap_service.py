@@ -1,5 +1,6 @@
 """Main service for generating and publishing fantasy sports recaps."""
 import json
+import logging
 from typing import Optional, List
 from datetime import datetime
 
@@ -10,8 +11,12 @@ from database.connection import AsyncSessionLocal
 from models.league import League
 from ai_text.summary_generator import SummaryGenerator
 from ai_text.text_formatter import TextFormatter
+from ai_text.llm_handler import RecapMode
 from publishers.groupme_publisher import GroupMePublisher
 from publishers.email_publisher import EmailPublisher
+
+
+logger = logging.getLogger(__name__)
 
 
 class RecapService:
@@ -129,13 +134,41 @@ class RecapService:
             generator = SummaryGenerator(db)
             summary = await generator.generate_weekly_summary(league_id, week)
             
-            # Format text
+            # Format text with robust error handling
             if league.enable_llm_rendering and league.ai_persona_style:
-                recap_text = await self.formatter.render_llm(
-                    summary, 
+                result = await self.formatter.generate_recap(
+                    summary,
                     style="standard",
                     persona=league.ai_persona_style
                 )
+                recap_text = result.text
+
+                # Log warnings and metadata
+                if result.warnings:
+                    for warning in result.warnings:
+                        logger.warning(
+                            f"Power rankings recap warning: {warning}",
+                            extra={
+                                "league_id": league_id,
+                                "week": week,
+                                "mode": result.mode.value,
+                            }
+                        )
+
+                logger.info(
+                    "Power rankings recap generated",
+                    extra={
+                        "league_id": league_id,
+                        "week": week,
+                        "mode": result.mode.value,
+                        "provider": result.provider,
+                        "latency_ms": result.latency_ms,
+                    }
+                )
+
+                # Inform users if circuit breaker is open
+                if result.mode == RecapMode.CIRCUIT_OPEN:
+                    recap_text = "⚠️ AI recap temporarily unavailable, showing standard recap:\n\n" + recap_text
             else:
                 recap_text = self.formatter.render_deterministic(summary, "standard")
             
@@ -188,10 +221,10 @@ class RecapService:
             # Focus on transactions for waiver recap
             if not summary.transactions:
                 return f"📄 {league.name} Week {week} Waiver Report\n\nNo waiver activity this week. Everyone's happy with their teams... or gave up. 🤷‍♂️"
-            
-            # Format text with transaction focus
+
+            # Format text with transaction focus and robust error handling
             if league.enable_llm_rendering and league.ai_persona_style:
-                recap_text = await self._format_waiver_focused_llm(summary, league.ai_persona_style)
+                recap_text = await self._format_waiver_focused_llm(summary, league.ai_persona_style, league_id, week)
             else:
                 recap_text = self._format_waiver_focused_deterministic(summary)
             
@@ -241,23 +274,52 @@ class RecapService:
         
         return "\n".join(lines)
     
-    async def _format_waiver_focused_llm(self, summary, persona: str) -> str:
-        """Format a waiver-focused recap using LLM."""
+    async def _format_waiver_focused_llm(
+        self,
+        summary,
+        persona: str,
+        league_id: int,
+        week: int
+    ) -> str:
+        """Format a waiver-focused recap using LLM with robust error handling."""
         base_text = self._format_waiver_focused_deterministic(summary)
-        
-        prompt = f"""
-Rewrite this fantasy football waiver wire report with a {persona} personality. 
-Focus on the transactions, FAAB spending, and waiver wire strategy.
-Make it entertaining and engaging for a group chat.
-Keep it 200-300 words.
 
-Original report:
-{base_text}
+        # Use the robust LLM handler through a custom prompt
+        # Since we have custom waiver formatting, we'll directly call the handler
+        result = await self.formatter.generate_recap(
+            summary,
+            style="standard",  # Base style for fallback
+            persona=persona
+        )
 
-Rewritten report:
-"""
-        
-        return await self.formatter._render_with_openai(prompt)
+        # Log warnings and metadata
+        if result.warnings:
+            for warning in result.warnings:
+                logger.warning(
+                    f"Waiver recap warning: {warning}",
+                    extra={
+                        "league_id": league_id,
+                        "week": week,
+                        "mode": result.mode.value,
+                    }
+                )
+
+        logger.info(
+            "Waiver recap generated",
+            extra={
+                "league_id": league_id,
+                "week": week,
+                "mode": result.mode.value,
+                "provider": result.provider,
+                "latency_ms": result.latency_ms,
+            }
+        )
+
+        # Inform users if circuit breaker is open
+        if result.mode == RecapMode.CIRCUIT_OPEN:
+            return "⚠️ AI recap temporarily unavailable, showing standard recap:\n\n" + base_text
+
+        return result.text
 
 
 # Background task functions
@@ -312,9 +374,39 @@ async def run_custom_recap(
             generator = SummaryGenerator(db)
             summary = await generator.generate_weekly_summary(league_id, week)
             
-            # Format text
+            # Format text with robust error handling
             if persona and service.formatter.openai_client:
-                recap_text = await service.formatter.render_llm(summary, style, persona)
+                result = await service.formatter.generate_recap(summary, style, persona)
+                recap_text = result.text
+
+                # Log warnings and metadata
+                if result.warnings:
+                    for warning in result.warnings:
+                        logger.warning(
+                            f"Custom recap warning: {warning}",
+                            extra={
+                                "league_id": league_id,
+                                "week": week,
+                                "mode": result.mode.value,
+                            }
+                        )
+
+                logger.info(
+                    "Custom recap generated",
+                    extra={
+                        "league_id": league_id,
+                        "week": week,
+                        "mode": result.mode.value,
+                        "provider": result.provider,
+                        "latency_ms": result.latency_ms,
+                        "style": style,
+                        "persona": persona,
+                    }
+                )
+
+                # Inform users if circuit breaker is open
+                if result.mode == RecapMode.CIRCUIT_OPEN:
+                    recap_text = "⚠️ AI recap temporarily unavailable, showing standard recap:\n\n" + recap_text
             else:
                 recap_text = service.formatter.render_deterministic(summary, style)
             
