@@ -7,6 +7,16 @@ import Link from 'next/link'
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 const OAUTH_URL = process.env.NEXT_PUBLIC_OAUTH_URL || API_BASE_URL
 
+/**
+ * Client-side page component that renders UI to connect Yahoo Fantasy and Sleeper leagues.
+ *
+ * Renders two connection panels: a Yahoo section that redirects the browser to `/auth/yahoo/start`
+ * when the "Connect Yahoo" button is clicked, and a Sleeper section with a form that accepts a
+ * required `league_id` and optional `groupme_bot_id`. Submitting the Sleeper form validates the
+ * league ID, sends a POST to `/connect/sleeper` with the provided data, and displays status
+ * feedback. While the request is in flight a loading state disables the submit button and updates
+ * its label.
+ */
 export default function ConnectPage() {
   const [activeTab, setActiveTab] = useState<'yahoo' | 'sleeper' | 'espn'>('yahoo')
   const [sleeperData, setSleeperData] = useState({

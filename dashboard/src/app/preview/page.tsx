@@ -23,6 +23,20 @@ const RECAP_TYPES = [
   { value: 'custom', label: 'Custom Recap' }
 ]
 
+/**
+ * Renders a client-side Preview Generator UI for creating recap text without publishing.
+ *
+ * The component provides a two-column layout: a Settings form to configure a preview request
+ * (league ID, recap type, week, style, optional custom persona) and a Preview panel that shows
+ * the generated recap text. Submitting the form POSTs a JSON payload to `/api/preview/generate`
+ * with `{ league_id, style, recap_type, publish: false }` and conditionally includes `week`
+ * and `persona` when provided. While generating it manages loading and error state. A "Copy"
+ * button copies the generated text to the clipboard.
+ *
+ * Validation: requires `league_id`; if missing the form submission sets an error and aborts.
+ *
+ * @returns The rendered Preview Generator React element.
+ */
 export default function PreviewPage() {
   const [request, setRequest] = useState<PreviewRequest>({
     league_id: '',

@@ -17,6 +17,22 @@ const STYLE_OPTIONS = [
   { value: 'nerd', label: 'Nerd' }
 ]
 
+/**
+ * Client-side React page that renders and manages league settings for the current `leagueId` route.
+ *
+ * Displays UI for toggling recap schedule options, selecting AI persona style, enabling LLM rendering,
+ * sending a test post, and saving settings. On mount (and when `leagueId` changes) it loads settings
+ * from GET /api/leagues/{leagueId}/settings, and exposes actions that PUT /api/leagues/{leagueId}/settings
+ * to save changes and POST /admin/run/tuesday/{leagueId} to trigger a test post.
+ *
+ * State managed internally:
+ * - `settings`: { enable_power_rankings, enable_waiver_recaps, ai_persona_style, enable_llm_rendering }
+ * - `loading`, `saving`, `testSending`, `message`
+ *
+ * Network errors and API responses are surfaced to the user via `message`.
+ *
+ * @returns The settings page JSX for the current league.
+ */
 export default function SettingsPage() {
   const params = useParams()
   const leagueId = params.leagueId as string
