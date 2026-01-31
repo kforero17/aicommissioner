@@ -68,6 +68,12 @@ class League(Base):
     # Status
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     last_sync_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Content generation tracking
+    last_power_rankings_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_power_rankings_week: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    last_waiver_recap_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_waiver_recap_week: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -81,6 +87,8 @@ class League(Base):
     rosters: Mapped[list["Roster"]] = relationship("Roster", back_populates="league", cascade="all, delete-orphan")
     matchups: Mapped[list["Matchup"]] = relationship("Matchup", back_populates="league", cascade="all, delete-orphan")
     transactions: Mapped[list["Transaction"]] = relationship("Transaction", back_populates="league", cascade="all, delete-orphan")
-    
+    members: Mapped[list["LeagueMember"]] = relationship("LeagueMember", back_populates="league", cascade="all, delete-orphan")
+    recaps: Mapped[list["Recap"]] = relationship("Recap", back_populates="league", cascade="all, delete-orphan")
+
     def __repr__(self) -> str:
         return f"<League(id={self.id}, name={self.name}, provider={self.provider}, season={self.season})>"

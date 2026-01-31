@@ -74,7 +74,7 @@ export default function Home() {
                       <div className="flex items-center justify-between bg-green-50 rounded-lg p-3">
                         <div>
                           <div className="font-semibold text-gray-900">#1 The Dream Team</div>
-                          <div className="text-sm text-gray-600">Mike's squad is on fire 🔥</div>
+                          <div className="text-sm text-gray-600">Mike&apos;s squad is on fire 🔥</div>
                         </div>
                         <div className="text-green-600 font-bold">↑2</div>
                       </div>
@@ -82,7 +82,7 @@ export default function Home() {
                       <div className="flex items-center justify-between bg-blue-50 rounded-lg p-3">
                         <div>
                           <div className="font-semibold text-gray-900">#2 Waiver Warriors</div>
-                          <div className="text-sm text-gray-600">Sarah's FAAB game is unmatched</div>
+                          <div className="text-sm text-gray-600">Sarah&apos;s FAAB game is unmatched</div>
                         </div>
                         <div className="text-blue-600 font-bold">→</div>
                       </div>
@@ -90,14 +90,14 @@ export default function Home() {
                       <div className="flex items-center justify-between bg-orange-50 rounded-lg p-3">
                         <div>
                           <div className="font-semibold text-gray-900">#3 Injury Reserve FC</div>
-                          <div className="text-sm text-gray-600">Jake's team defying all odds 🍀</div>
+                          <div className="text-sm text-gray-600">Jake&apos;s team defying all odds 🍀</div>
                         </div>
                         <div className="text-orange-600 font-bold">↓1</div>
                       </div>
                     </div>
                     
                     <div className="text-xs text-gray-500 text-center pt-2 border-t border-gray-100">
-                      Generated with "Snark" personality • Auto-posted to GroupMe
+                      Generated with &quot;Snark&quot; personality · Auto-posted to GroupMe
                     </div>
                   </div>
                 </div>
@@ -221,7 +221,7 @@ export default function Home() {
             Ready to level up your league?
           </h2>
           <p className="text-xl text-blue-100 mb-8">
-            Join commissioners who've upgraded their fantasy experience
+            Join commissioners who&apos;ve upgraded their fantasy experience
           </p>
           <Link 
             href="/auth/signup"

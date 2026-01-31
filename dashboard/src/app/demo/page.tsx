@@ -40,7 +40,7 @@ export default function Demo() {
                 <span className="text-green-600 font-medium">↑ 2</span>
               </div>
               <p className="text-gray-600 mt-1">
-                <strong>Mike's squad</strong> continues their scorching hot streak with another dominant performance. 
+                <strong>Mike&apos;s squad</strong> continues their scorching hot streak with another dominant performance. 
                 That Lamar-Andrews stack is looking unstoppable, and frankly, the rest of us are just playing for second place at this point. 🔥
               </p>
             </div>
@@ -51,7 +51,7 @@ export default function Demo() {
                 <span className="text-blue-600 font-medium">→ 0</span>
               </div>
               <p className="text-gray-600 mt-1">
-                <strong>Sarah</strong> proving that you don't need to draft well when you can pick up every breakout player 
+                <strong>Sarah</strong> proving that you don&apos;t need to draft well when you can pick up every breakout player 
                 before anyone else notices. That $47 FAAB bid on Puka Nacua in Week 2 is looking genius now. 🧠
               </p>
             </div>
@@ -62,14 +62,14 @@ export default function Demo() {
                 <span className="text-orange-600 font-medium">↓ 1</span>
               </div>
               <p className="text-gray-600 mt-1">
-                <strong>Jake's</strong> team has more injury reports than a MASH unit, but somehow keeps winning. 
-                When your RB1 is a practice squad guy and you're still competitive, that's just pure luck. 🍀
+                <strong>Jake&apos;s</strong> team has more injury reports than a MASH unit, but somehow keeps winning.
+                When your RB1 is a practice squad guy and you&apos;re still competitive, that&apos;s just pure luck. 🍀
               </p>
             </div>
           </div>
           
           <div className="mt-6 flex items-center justify-between text-sm text-gray-500">
-            <span>Generated with "Snark" personality • 2.3k characters</span>
+            <span>Generated with &quot;Snark&quot; personality · 2.3k characters</span>
             <span>📱 Auto-posted to GroupMe</span>
           </div>
         </div>
@@ -87,7 +87,7 @@ export default function Demo() {
           </div>
           
           <div className="bg-gray-50 rounded-lg p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">This Week's Waiver Carnage:</h3>
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">This Week&apos;s Waiver Carnage:</h3>
             
             <div className="space-y-3">
               <div className="bg-white rounded-lg p-4 border-l-4 border-red-500">
@@ -118,7 +118,7 @@ export default function Demo() {
                     <p className="font-medium text-gray-900">
                       <strong>Chris</strong> adds DeAndre Hopkins ($34) while already rostering 8 WRs
                     </p>
-                    <p className="text-gray-600 text-sm mt-1">Starting to think you're collecting them like Pokemon cards. 🃏</p>
+                    <p className="text-gray-600 text-sm mt-1">Starting to think you&apos;re collecting them like Pokemon cards. 🃏</p>
                   </div>
                 </div>
               </div>
@@ -337,7 +337,7 @@ function PersonalityShowcase() {
 
         {generatedText && (
           <div className="mt-6 p-4 bg-gray-50 rounded-lg border-l-4 border-blue-500">
-            <p className="text-gray-800 italic">"{generatedText}"</p>
+            <p className="text-gray-800 italic">&quot;{generatedText}&quot;</p>
             <p className="text-xs text-gray-500 mt-2">
               Generated with {personalities.find(p => p.id === selectedStyle)?.name} personality
             </p>

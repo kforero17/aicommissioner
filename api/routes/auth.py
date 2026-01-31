@@ -3,7 +3,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status, Request, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,6 +32,16 @@ if settings.debug:
         access_token_url='https://api.login.yahoo.com/oauth2/get_token',
         client_kwargs={'verify': False}
     )
+    oauth.register(
+        name='google',
+        client_id=settings.google_client_id,
+        client_secret=settings.google_client_secret,
+        server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
+        client_kwargs={
+            'scope': 'openid email profile',
+            'verify': False
+        }
+    )
 else:
     oauth.register(
         name='yahoo',
@@ -40,6 +50,13 @@ else:
         authorize_url='https://api.login.yahoo.com/oauth2/request_auth',
         access_token_url='https://api.login.yahoo.com/oauth2/get_token',
         client_kwargs={}
+    )
+    oauth.register(
+        name='google',
+        client_id=settings.google_client_id,
+        client_secret=settings.google_client_secret,
+        server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
+        client_kwargs={'scope': 'openid email profile'}
     )
 
 
@@ -147,7 +164,6 @@ async def yahoo_start(request: Request):
 @router.get("/yahoo/callback")
 async def yahoo_callback(
     request: Request,
-    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db)
 ):
     """Handle Yahoo OAuth callback."""
@@ -166,7 +182,7 @@ async def yahoo_callback(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Token exchange failed: {str(e)}"
         )
-    
+
     # Extract user info from JWT access token
     print(f"Token received: {list(token.keys())}")
 
@@ -197,11 +213,11 @@ async def yahoo_callback(
         yahoo_user_id = hashlib.sha256(access_token.encode()).hexdigest()[:16]
         print(f"Generated fallback user ID: {yahoo_user_id}")
         username = f"yahoo_user_{yahoo_user_id[:8]}"
-    
+
     # Find or create user
     result = await db.execute(select(User).filter(User.yahoo_user_id == yahoo_user_id))
     user = result.scalar_one_or_none()
-    
+
     if not user:
         user = User(
             yahoo_user_id=yahoo_user_id,
@@ -213,25 +229,41 @@ async def yahoo_callback(
         # Update existing user
         user.email = email or user.email
         user.username = username or user.username
-    
+
     # Store OAuth tokens
     user.yahoo_access_token = token['access_token']
     user.yahoo_refresh_token = token.get('refresh_token')
     if 'expires_in' in token:
         user.yahoo_token_expires_at = datetime.now(timezone.utc) + timedelta(seconds=token['expires_in'])
-    
+
     await db.commit()
     await db.refresh(user)
-    
+
     # Create access token
     access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
     access_token = create_access_token(
         data={"sub": str(user.id)}, expires_delta=access_token_expires
     )
 
-    # Redirect to frontend with token in HTTP-only secure cookie
+    # Trigger league import - try Celery first, fall back to sync if unavailable
+    task_id = None
+    try:
+        from schedulers.tasks import import_yahoo_leagues_task
+        task = import_yahoo_leagues_task.apply_async(args=[user.id])
+        task_id = task.id
+    except Exception as e:
+        # Celery/Redis not available - run import synchronously
+        import logging
+        logging.warning(f"Celery unavailable, running import synchronously: {e}")
+        from ingestors.yahoo_ingestor import ingest_yahoo_leagues
+        import asyncio
+        asyncio.create_task(ingest_yahoo_leagues(user.id))
+
+    # Redirect to frontend with token and optional task_id
     frontend_url = settings.frontend_url or "http://localhost:3000"
     redirect_url = f"{frontend_url}/connect?yahoo_connected=true"
+    if task_id:
+        redirect_url += f"&task_id={task_id}"
 
     response = RedirectResponse(url=redirect_url)
     response.set_cookie(
@@ -244,21 +276,120 @@ async def yahoo_callback(
         path="/"
     )
 
-    # Trigger league import in background
-    from ingestors.yahoo_ingestor import ingest_yahoo_leagues
-    background_tasks.add_task(ingest_yahoo_leagues, user.id)
+    return response
+
+
+@router.get("/google/login")
+async def google_login(request: Request):
+    """Initiate Google OAuth flow."""
+    if not settings.google_client_id or not settings.google_client_secret:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Google OAuth not configured. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables."
+        )
+
+    try:
+        redirect_uri = settings.google_redirect_uri
+        print(f"Google OAuth redirect URI being sent: {redirect_uri}")
+        return await oauth.google.authorize_redirect(request, redirect_uri)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to initiate Google OAuth: {str(e)}"
+        )
+
+
+@router.get("/google/callback")
+async def google_callback(
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    """Handle Google OAuth callback."""
+    try:
+        token = await oauth.google.authorize_access_token(request)
+    except OAuthError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"OAuth error: {error.error} - {error.description}"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Token exchange failed: {str(e)}"
+        )
+
+    user_info = token.get('userinfo')
+    if not user_info:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Failed to get user info from Google"
+        )
+
+    google_user_id = user_info.get('sub')
+    email = user_info.get('email')
+    name = user_info.get('name')
+
+    if not google_user_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Failed to get user ID from Google"
+        )
+
+    result = await db.execute(select(User).filter(User.google_user_id == google_user_id))
+    user = result.scalar_one_or_none()
+
+    if not user:
+        existing_user_by_email = None
+        if email:
+            result = await db.execute(select(User).filter(User.email == email))
+            existing_user_by_email = result.scalar_one_or_none()
+
+        if existing_user_by_email:
+            user = existing_user_by_email
+            user.google_user_id = google_user_id
+        else:
+            user = User(
+                google_user_id=google_user_id,
+                email=email,
+                username=name,
+            )
+            db.add(user)
+    else:
+        user.email = email or user.email
+        user.username = name or user.username
+
+    await db.commit()
+    await db.refresh(user)
+
+    access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
+    access_token = create_access_token(
+        data={"sub": str(user.id)}, expires_delta=access_token_expires
+    )
+
+    frontend_url = settings.frontend_url or "http://localhost:3000"
+    redirect_url = f"{frontend_url}/dashboard"
+
+    response = RedirectResponse(url=redirect_url)
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        httponly=True,
+        secure=True,
+        samesite="none",
+        max_age=settings.access_token_expire_minutes * 60,
+        path="/"
+    )
 
     return response
 
 
-@router.post("/sleeper/leagues", response_model=UserResponse)
+@router.post("/sleeper/leagues")
 async def add_sleeper_leagues(
     request: SleeperLeagueRequest,
-    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Add Sleeper league IDs to user account."""
+    """Add Sleeper league IDs to user account and trigger import."""
     # Validate league IDs (basic validation - you might want to call Sleeper API to verify)
     for league_id in request.league_ids:
         if not league_id.strip():
@@ -272,23 +403,42 @@ async def add_sleeper_leagues(
     await db.commit()
     await db.refresh(current_user)
 
-    # Trigger ingestion for each league in background
-    from ingestors.sleeper_ingestor import ingest_sleeper_league
-    for league_id in request.league_ids:
-        background_tasks.add_task(ingest_sleeper_league, league_id, current_user.id)
+    # Trigger imports - try Celery first, fall back to sync if unavailable
+    task_ids = []
+    try:
+        from schedulers.tasks import import_sleeper_league_task
+        for league_id in request.league_ids:
+            task = import_sleeper_league_task.apply_async(args=[league_id, current_user.id])
+            task_ids.append({
+                "league_id": league_id,
+                "task_id": task.id
+            })
+    except Exception as e:
+        # Celery/Redis not available - run imports synchronously
+        import logging
+        logging.warning(f"Celery unavailable, running Sleeper import synchronously: {e}")
+        from ingestors.sleeper_ingestor import ingest_sleeper_league
+        import asyncio
+        for league_id in request.league_ids:
+            asyncio.create_task(ingest_sleeper_league(league_id, current_user.id))
+            task_ids.append({"league_id": league_id, "task_id": None})
 
     # Convert back to list for response
     sleeper_leagues = json.loads(current_user.sleeper_leagues) if current_user.sleeper_leagues else []
 
-    return UserResponse(
-        id=current_user.id,
-        username=current_user.username,
-        email=current_user.email,
-        yahoo_user_id=current_user.yahoo_user_id,
-        sleeper_leagues=sleeper_leagues,
-        timezone=current_user.timezone,
-        enable_llm_rendering=current_user.enable_llm_rendering
-    )
+    return {
+        "message": "Sleeper league import started",
+        "task_ids": task_ids,
+        "user": UserResponse(
+            id=current_user.id,
+            username=current_user.username,
+            email=current_user.email,
+            yahoo_user_id=current_user.yahoo_user_id,
+            sleeper_leagues=sleeper_leagues,
+            timezone=current_user.timezone,
+            enable_llm_rendering=current_user.enable_llm_rendering
+        )
+    }
 
 
 @router.get("/me", response_model=UserResponse)
@@ -326,7 +476,6 @@ async def delete_account(
 
 @router.post("/yahoo/import-leagues")
 async def import_yahoo_leagues(
-    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -336,12 +485,25 @@ async def import_yahoo_leagues(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Yahoo account not connected"
         )
-    
-    # Import leagues in background
-    from ingestors.yahoo_ingestor import ingest_yahoo_leagues
-    background_tasks.add_task(ingest_yahoo_leagues, current_user.id)
-    
-    return {"message": "Yahoo league import started"}
+
+    # Trigger import - try Celery first, fall back to sync if unavailable
+    task_id = None
+    try:
+        from schedulers.tasks import import_yahoo_leagues_task
+        task = import_yahoo_leagues_task.apply_async(args=[current_user.id])
+        task_id = task.id
+    except Exception as e:
+        # Celery/Redis not available - run import synchronously
+        import logging
+        logging.warning(f"Celery unavailable, running Yahoo import synchronously: {e}")
+        from ingestors.yahoo_ingestor import ingest_yahoo_leagues
+        import asyncio
+        asyncio.create_task(ingest_yahoo_leagues(current_user.id))
+
+    return {
+        "message": "Yahoo league import started",
+        "task_id": task_id
+    }
 
 
 @router.get("/yahoo/status")

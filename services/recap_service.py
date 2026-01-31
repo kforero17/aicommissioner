@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from database.connection import AsyncSessionLocal
 from models.league import League
+from models.recap import Recap, RecapType, RecapStatus
 from ai_text.summary_generator import SummaryGenerator
 from ai_text.text_formatter import TextFormatter
 from ai_text.llm_handler import RecapMode
@@ -99,19 +100,21 @@ class RecapService:
         return results
     
     async def generate_power_rankings_recap(
-        self, 
-        league_id: int, 
+        self,
+        league_id: int,
         week: Optional[int] = None,
-        publish: bool = True
+        publish: bool = True,
+        test_mode: bool = False
     ) -> str:
         """
         Generate and optionally publish a power rankings recap.
-        
+
         Args:
             league_id: League ID
             week: Week number (uses current week if None)
-            publish: Whether to publish to GroupMe
-            
+            publish: Whether to publish to configured channels
+            test_mode: Whether to prefix header with [TEST]
+
         Returns:
             Generated recap text
         """
@@ -173,29 +176,62 @@ class RecapService:
                 recap_text = self.formatter.render_deterministic(summary, "standard")
             
             # Add header for power rankings focus
-            header = f"🏆 POWER RANKINGS - {league.name} Week {week}\n\n"
+            header_prefix = "[TEST] " if test_mode else ""
+            header = f"{header_prefix}🏆 POWER RANKINGS - {league.name} Week {week}\n\n"
             recap_text = header + recap_text
-            
+
+            # Determine rendering mode for storage
+            rendering_mode = "deterministic"
+            if league.enable_llm_rendering and league.ai_persona_style:
+                rendering_mode = result.mode.value if 'result' in dir() else "llm"
+
+            # Save recap to database
+            recap_record = Recap(
+                league_id=league_id,
+                recap_type=RecapType.POWER_RANKINGS,
+                week=week,
+                season=league.season,
+                title=f"Power Rankings - Week {week}",
+                content=recap_text,
+                status=RecapStatus.DRAFT,
+                rendering_mode=rendering_mode,
+                ai_persona=league.ai_persona_style
+            )
+            db.add(recap_record)
+            await db.flush()
+
             # Publish if requested
             if publish:
-                await self._publish_to_channels(league, recap_text, "Power Rankings")
-            
+                publish_results = await self._publish_to_channels(league, recap_text, "Power Rankings")
+
+                # Update recap status and channels
+                recap_record.status = RecapStatus.PUBLISHED
+                recap_record.published_at = datetime.utcnow()
+                recap_record.publish_channels = json.dumps(publish_results)
+
+                # Update legacy tracking fields
+                league.last_power_rankings_at = datetime.utcnow()
+                league.last_power_rankings_week = week
+
+            await db.commit()
             return recap_text
     
     async def generate_waiver_recap(
-        self, 
-        league_id: int, 
+        self,
+        league_id: int,
         week: Optional[int] = None,
-        publish: bool = True
+        publish: bool = True,
+        test_mode: bool = False
     ) -> str:
         """
         Generate and optionally publish a waiver wire recap.
-        
+
         Args:
             league_id: League ID
             week: Week number (uses current week if None)
-            publish: Whether to publish to GroupMe
-            
+            publish: Whether to publish to configured channels
+            test_mode: Whether to prefix header with [TEST]
+
         Returns:
             Generated recap text
         """
@@ -220,18 +256,74 @@ class RecapService:
             
             # Focus on transactions for waiver recap
             if not summary.transactions:
-                return f"📄 {league.name} Week {week} Waiver Report\n\nNo waiver activity this week. Everyone's happy with their teams... or gave up. 🤷‍♂️"
+                header_prefix = "[TEST] " if test_mode else ""
+                no_activity_text = f"{header_prefix}📄 {league.name} Week {week} Waiver Report\n\nNo waiver activity this week. Everyone's happy with their teams... or gave up. 🤷‍♂️"
+
+                # Save even empty waiver recaps
+                recap_record = Recap(
+                    league_id=league_id,
+                    recap_type=RecapType.WAIVER_RECAP,
+                    week=week,
+                    season=league.season,
+                    title=f"Waiver Report - Week {week}",
+                    content=no_activity_text,
+                    status=RecapStatus.PUBLISHED if publish else RecapStatus.DRAFT,
+                    rendering_mode="deterministic",
+                    ai_persona=None,
+                    published_at=datetime.utcnow() if publish else None
+                )
+                db.add(recap_record)
+                await db.commit()
+                return no_activity_text
 
             # Format text with transaction focus and robust error handling
             if league.enable_llm_rendering and league.ai_persona_style:
                 recap_text = await self._format_waiver_focused_llm(summary, league.ai_persona_style, league_id, week)
             else:
                 recap_text = self._format_waiver_focused_deterministic(summary)
-            
+
+            # Add [TEST] prefix to header if test_mode is enabled
+            if test_mode:
+                lines = recap_text.split('\n', 1)
+                if len(lines) > 1:
+                    recap_text = f"[TEST] {lines[0]}\n{lines[1]}"
+                else:
+                    recap_text = f"[TEST] {recap_text}"
+
+            # Determine rendering mode for storage
+            rendering_mode = "deterministic"
+            if league.enable_llm_rendering and league.ai_persona_style:
+                rendering_mode = "llm"
+
+            # Save recap to database
+            recap_record = Recap(
+                league_id=league_id,
+                recap_type=RecapType.WAIVER_RECAP,
+                week=week,
+                season=league.season,
+                title=f"Waiver Report - Week {week}",
+                content=recap_text,
+                status=RecapStatus.DRAFT,
+                rendering_mode=rendering_mode,
+                ai_persona=league.ai_persona_style
+            )
+            db.add(recap_record)
+            await db.flush()
+
             # Publish if requested
             if publish:
-                await self._publish_to_channels(league, recap_text, "Waiver Report")
-            
+                publish_results = await self._publish_to_channels(league, recap_text, "Waiver Report")
+
+                # Update recap status and channels
+                recap_record.status = RecapStatus.PUBLISHED
+                recap_record.published_at = datetime.utcnow()
+                recap_record.publish_channels = json.dumps(publish_results)
+
+                # Update legacy tracking fields
+                league.last_waiver_recap_at = datetime.utcnow()
+                league.last_waiver_recap_week = week
+
+            await db.commit()
             return recap_text
     
     def _format_waiver_focused_deterministic(self, summary) -> str:

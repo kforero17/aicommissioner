@@ -43,6 +43,7 @@ async def init_db():
         from models.roster import Roster
         from models.matchup import Matchup
         from models.transaction import Transaction
-        
+        from models.league_member import LeagueMember
+
         # Create all tables
         await conn.run_sync(Base.metadata.create_all)

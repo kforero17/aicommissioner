@@ -1,12 +1,36 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import Link from 'next/link'
 import ProtectedRoute from '@/components/ProtectedRoute'
 
+interface LeagueData {
+  platform: string
+  leagueId?: string
+  leagueName?: string
+  username?: string
+}
+
+interface PreferencesData {
+  emailNotifications: boolean
+  weeklyRecap: boolean
+  recapDay: string
+  recapTime: string
+  powerRankings: boolean
+  waiverReport: boolean
+  injuryAlerts: boolean
+  tradeAlerts: boolean
+  groupmeIntegration: boolean
+  groupmeGroupId: string
+}
+
+interface TeamData {
+  teamId: string
+  teamName?: string
+}
+
 // League Connection Component
-function LeagueConnection({ onComplete }: { onComplete: (data: any) => void }) {
+function LeagueConnection({ onComplete }: { onComplete: (data: LeagueData) => void }) {
   const [activeTab, setActiveTab] = useState<'yahoo' | 'sleeper' | 'espn'>('yahoo')
   const [sleeperData, setSleeperData] = useState({
     league_id: '',
@@ -200,7 +224,7 @@ function LeagueConnection({ onComplete }: { onComplete: (data: any) => void }) {
 }
 
 // Preferences Component
-function PreferencesSelection({ onComplete }: { onComplete: (data: any) => void }) {
+function PreferencesSelection({ onComplete }: { onComplete: (data: PreferencesData) => void }) {
   const [preferences, setPreferences] = useState({
     emailNotifications: true,
     weeklyRecap: true,
@@ -349,7 +373,7 @@ function PreferencesSelection({ onComplete }: { onComplete: (data: any) => void 
                 placeholder="Enter your GroupMe group ID"
               />
               <p className="text-xs text-gray-500 mt-1">
-                We'll send you instructions on how to add our bot to your group
+                We&apos;ll send you instructions on how to add our bot to your group
               </p>
             </div>
           )}
@@ -367,7 +391,7 @@ function PreferencesSelection({ onComplete }: { onComplete: (data: any) => void 
 }
 
 // Team Verification Component
-function TeamVerification({ leagueData, onComplete }: { leagueData: any; onComplete: (data: any) => void }) {
+function TeamVerification({ leagueData, onComplete }: { leagueData: LeagueData; onComplete: (data: TeamData) => void }) {
   const [selectedTeam, setSelectedTeam] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -443,7 +467,7 @@ function TeamVerification({ leagueData, onComplete }: { leagueData: any; onCompl
         </button>
 
         <p className="text-xs text-gray-500 text-center mt-4">
-          Don't see your team? Make sure you're connected to the right league.
+          Don&apos;t see your team? Make sure you&apos;re connected to the right league.
         </p>
       </div>
     </div>
@@ -472,9 +496,9 @@ function SetupComplete({ leagueId }: { leagueId?: string }) {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
             </svg>
           </div>
-          <h2 className="text-3xl font-bold text-gray-900 mb-2">You're All Set!</h2>
+          <h2 className="text-3xl font-bold text-gray-900 mb-2">You&apos;re All Set!</h2>
           <p className="text-gray-600">
-            Your league is connected and preferences are saved. You're ready to experience automated fantasy management.
+            Your league is connected and preferences are saved. You&apos;re ready to experience automated fantasy management.
           </p>
         </div>
 
@@ -507,7 +531,11 @@ function SetupComplete({ leagueId }: { leagueId?: string }) {
 // Main Onboarding Component
 function OnboardingContent() {
   const [currentStep, setCurrentStep] = useState(1)
-  const [onboardingData, setOnboardingData] = useState({
+  const [onboardingData, setOnboardingData] = useState<{
+    league: LeagueData | null
+    preferences: PreferencesData | null
+    team: TeamData | null
+  }>({
     league: null,
     preferences: null,
     team: null
@@ -520,17 +548,17 @@ function OnboardingContent() {
     { id: 4, name: 'Complete', icon: '🎉' }
   ]
 
-  const handleLeagueConnect = (data: any) => {
+  const handleLeagueConnect = (data: LeagueData) => {
     setOnboardingData(prev => ({ ...prev, league: data }))
     setCurrentStep(2)
   }
 
-  const handlePreferences = (data: any) => {
+  const handlePreferences = (data: PreferencesData) => {
     setOnboardingData(prev => ({ ...prev, preferences: data }))
     setCurrentStep(3)
   }
 
-  const handleTeamVerification = (data: any) => {
+  const handleTeamVerification = (data: TeamData) => {
     setOnboardingData(prev => ({ ...prev, team: data }))
     setCurrentStep(4)
   }

@@ -22,6 +22,7 @@ class User(Base):
     
     # OAuth provider data
     yahoo_user_id: Mapped[Optional[str]] = mapped_column(String(100), unique=True, index=True, nullable=True)
+    google_user_id: Mapped[Optional[str]] = mapped_column(String(100), unique=True, index=True, nullable=True)
     _yahoo_access_token_encrypted: Mapped[Optional[str]] = mapped_column("yahoo_access_token", Text, nullable=True)
     _yahoo_refresh_token_encrypted: Mapped[Optional[str]] = mapped_column("yahoo_refresh_token", Text, nullable=True)
     yahoo_token_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -43,6 +44,7 @@ class User(Base):
     
     # Relationships
     leagues: Mapped[list["League"]] = relationship("League", back_populates="owner", cascade="all, delete-orphan")
+    league_memberships: Mapped[list["LeagueMember"]] = relationship("LeagueMember", back_populates="user", cascade="all, delete-orphan")
 
     @hybrid_property
     def yahoo_access_token(self) -> Optional[str]:

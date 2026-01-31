@@ -62,11 +62,11 @@ export default function Login() {
             </div>
             <h2 className="text-3xl font-bold text-gray-900 mb-4">Check your email!</h2>
             <p className="text-gray-600 mb-8">
-              We've sent a magic link to <strong>{email}</strong>. 
+              We&apos;ve sent a magic link to <strong>{email}</strong>. 
               Click the link to sign in to your account.
             </p>
             <p className="text-sm text-gray-500">
-              Didn't receive it? Check your spam folder or{' '}
+              Didn&apos;t receive it? Check your spam folder or{' '}
               <button 
                 onClick={() => setShowSuccess(false)}
                 className="text-blue-600 hover:text-blue-700 font-medium"
@@ -164,7 +164,7 @@ export default function Login() {
           </form>
 
           <div className="text-center text-sm text-gray-600">
-            Don't have an account?{' '}
+            Don&apos;t have an account?{' '}
             <Link href="/auth/signup" className="text-blue-600 hover:text-blue-700 font-medium">
               Sign up
             </Link>

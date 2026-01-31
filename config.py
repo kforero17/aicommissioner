@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     yahoo_client_id: Optional[str] = None
     yahoo_client_secret: Optional[str] = None
     yahoo_redirect_uri: str = "https://localhost:8000/auth/yahoo/callback"
+
+    # Google OAuth
+    google_client_id: Optional[str] = None
+    google_client_secret: Optional[str] = None
+    google_redirect_uri: str = "https://localhost:8000/auth/google/callback"
     
     # AI Services
     openai_api_key: Optional[str] = None

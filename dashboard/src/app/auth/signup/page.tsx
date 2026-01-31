@@ -61,7 +61,7 @@ export default function SignUp() {
             </div>
             <h2 className="text-3xl font-bold text-gray-900 mb-4">Check your email!</h2>
             <p className="text-gray-600 mb-8">
-              We've sent a magic link to <strong>{email}</strong>. 
+              We&apos;ve sent a magic link to <strong>{email}</strong>. 
               Click the link to complete your sign up and create your commissioner profile.
             </p>
             <p className="text-sm text-gray-500 mb-4">
@@ -74,7 +74,7 @@ export default function SignUp() {
               </svg>
             </div>
             <p className="text-sm text-gray-500">
-              Didn't receive it? Check your spam folder or{' '}
+              Didn&apos;t receive it? Check your spam folder or{' '}
               <button 
                 onClick={() => setShowSuccess(false)}
                 className="text-blue-600 hover:text-blue-700 font-medium"

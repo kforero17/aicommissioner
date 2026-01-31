@@ -102,18 +102,40 @@ class YahooAPI:
     def _parse_yahoo_response(self, xml_text: str) -> Dict[str, Any]:
         """Parse Yahoo's XML response to dict using xmltodict."""
         try:
-            # Parse XML to dictionary
             parsed = xmltodict.parse(xml_text)
-            
-            # Yahoo wraps responses in a fantasy_content element
+
             if 'fantasy_content' in parsed:
                 return parsed['fantasy_content']
-            
+
             return parsed
         except Exception as e:
             print(f"Error parsing Yahoo XML response: {e}")
-            # Return a minimal structure to prevent crashes
             return {}
+
+    @staticmethod
+    def _ensure_list(data: Any) -> List[Dict[str, Any]]:
+        """Normalize Yahoo API data to a list of dicts.
+
+        xmltodict returns inconsistent types: single items become dicts,
+        multiple items become lists, and malformed data becomes strings.
+        This normalizes everything to a list of dicts for safe iteration.
+        """
+        if data is None:
+            return []
+        if isinstance(data, str):
+            return []
+        if isinstance(data, dict):
+            return [data]
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        return []
+
+    @staticmethod
+    def _safe_get(data: Any, key: str, default: Any = None) -> Any:
+        """Safely get a value from data that might not be a dict."""
+        if isinstance(data, dict):
+            return data.get(key, default)
+        return default
     
     def _extract_leagues_from_json(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Extract league data from Yahoo JSON response."""
@@ -326,6 +348,41 @@ async def _ingest_yahoo_league(
     league.last_sync_at = datetime.now(timezone.utc)
 
 
+def _extract_teams_from_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Extract team list from Yahoo's nested XML response structure."""
+    league_data = response.get('league', {})
+    if isinstance(league_data, list):
+        for item in league_data:
+            if isinstance(item, dict) and 'teams' in item:
+                teams_container = item['teams']
+                return YahooAPI._ensure_list(teams_container.get('team'))
+    elif isinstance(league_data, dict):
+        teams_container = league_data.get('teams', {})
+        if isinstance(teams_container, dict):
+            return YahooAPI._ensure_list(teams_container.get('team'))
+    return YahooAPI._ensure_list(response.get('teams', {}).get('team'))
+
+
+def _extract_standings_from_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Extract standings list from Yahoo's nested XML response structure."""
+    league_data = response.get('league', {})
+    if isinstance(league_data, list):
+        for item in league_data:
+            if isinstance(item, dict) and 'standings' in item:
+                standings_container = item['standings']
+                if isinstance(standings_container, dict):
+                    teams = standings_container.get('teams', {})
+                    if isinstance(teams, dict):
+                        return YahooAPI._ensure_list(teams.get('team'))
+    elif isinstance(league_data, dict):
+        standings_container = league_data.get('standings', {})
+        if isinstance(standings_container, dict):
+            teams = standings_container.get('teams', {})
+            if isinstance(teams, dict):
+                return YahooAPI._ensure_list(teams.get('team'))
+    return []
+
+
 async def _ingest_yahoo_teams(
     api: YahooAPI,
     db: AsyncSession,
@@ -333,17 +390,19 @@ async def _ingest_yahoo_teams(
     league_key: str
 ):
     """Ingest team/roster data from Yahoo."""
-    teams_data = await api.get_teams(league_key)
-    standings_data = await api.get_standings(league_key)
-    
-    # Create standings lookup
+    teams_response = await api.get_teams(league_key)
+    standings_response = await api.get_standings(league_key)
+
+    teams_list = _extract_teams_from_response(teams_response)
+    standings_list = _extract_standings_from_response(standings_response)
+
     standings_lookup = {}
-    for standing in standings_data:
-        team_key = standing.get('team_key')
+    for standing in standings_list:
+        team_key = YahooAPI._safe_get(standing, 'team_key')
         if team_key:
             standings_lookup[team_key] = standing
-    
-    for team_data in teams_data:
+
+    for team_data in teams_list:
         team_key = team_data.get('team_key')
         if not team_key:
             continue
@@ -365,23 +424,50 @@ async def _ingest_yahoo_teams(
             )
             db.add(roster)
         
-        # Update roster data
         roster.team_name = team_data.get('name')
-        roster.owner_name = team_data.get('manager', {}).get('nickname')
-        
-        # Get standings data
+        manager = YahooAPI._safe_get(team_data, 'manager', {})
+        roster.owner_name = YahooAPI._safe_get(manager, 'nickname')
+
         standing = standings_lookup.get(team_key, {})
-        outcome_totals = standing.get('outcome_totals', {})
-        
-        roster.wins = int(outcome_totals.get('wins', 0))
-        roster.losses = int(outcome_totals.get('losses', 0))
-        roster.ties = int(outcome_totals.get('ties', 0))
-        roster.points_for = float(standing.get('points_for', 0))
-        roster.points_against = float(standing.get('points_against', 0))
+        outcome_totals = YahooAPI._safe_get(standing, 'outcome_totals', {})
+
+        roster.wins = int(YahooAPI._safe_get(outcome_totals, 'wins', 0))
+        roster.losses = int(YahooAPI._safe_get(outcome_totals, 'losses', 0))
+        roster.ties = int(YahooAPI._safe_get(outcome_totals, 'ties', 0))
+        roster.points_for = float(YahooAPI._safe_get(standing, 'points_for', 0))
+        roster.points_against = float(YahooAPI._safe_get(standing, 'points_against', 0))
         
         # Store current roster (would need separate API call for detailed roster)
         # For now, just store the team key
         roster.starters = json.dumps([team_key])
+
+
+def _extract_matchups_from_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Extract matchup list from Yahoo's nested scoreboard response."""
+    league_data = response.get('league', {})
+    if isinstance(league_data, list):
+        for item in league_data:
+            if isinstance(item, dict) and 'scoreboard' in item:
+                scoreboard = item['scoreboard']
+                if isinstance(scoreboard, dict):
+                    matchups = scoreboard.get('matchups', {})
+                    if isinstance(matchups, dict):
+                        return YahooAPI._ensure_list(matchups.get('matchup'))
+    elif isinstance(league_data, dict):
+        scoreboard = league_data.get('scoreboard', {})
+        if isinstance(scoreboard, dict):
+            matchups = scoreboard.get('matchups', {})
+            if isinstance(matchups, dict):
+                return YahooAPI._ensure_list(matchups.get('matchup'))
+    return []
+
+
+def _extract_teams_from_matchup(matchup_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Extract teams list from a matchup dict."""
+    teams_container = matchup_data.get('teams', {})
+    if isinstance(teams_container, dict):
+        return YahooAPI._ensure_list(teams_container.get('team'))
+    return YahooAPI._ensure_list(teams_container)
 
 
 async def _ingest_yahoo_matchups(
@@ -393,20 +479,23 @@ async def _ingest_yahoo_matchups(
 ):
     """Ingest matchup data for a specific week."""
     try:
-        scoreboard_data = await api.get_scoreboard(league_key, week)
+        scoreboard_response = await api.get_scoreboard(league_key, week)
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 404:
-            # Week doesn't exist yet
             return
         raise
-    
-    for matchup_data in scoreboard_data:
-        teams = matchup_data.get('teams', [])
+
+    matchups_list = _extract_matchups_from_response(scoreboard_response)
+
+    for matchup_data in matchups_list:
+        teams = _extract_teams_from_matchup(matchup_data)
         if len(teams) != 2:
-            continue  # Skip bye weeks or invalid matchups
-        
+            continue
+
         team1, team2 = teams[0], teams[1]
-        provider_matchup_id = f"{league_key}_{week}_{team1.get('team_key')}_{team2.get('team_key')}"
+        team1_key = YahooAPI._safe_get(team1, 'team_key', '')
+        team2_key = YahooAPI._safe_get(team2, 'team_key', '')
+        provider_matchup_id = f"{league_key}_{week}_{team1_key}_{team2_key}"
         
         # Find or create matchup
         result = await db.execute(
@@ -426,14 +515,17 @@ async def _ingest_yahoo_matchups(
             )
             db.add(matchup)
         
-        # Update matchup data
-        matchup.team1_roster_id = team1.get('team_key')
-        matchup.team1_points = float(team1.get('team_points', {}).get('total', 0))
-        matchup.team1_projected = float(team1.get('team_projected_points', {}).get('total', 0))
-        
-        matchup.team2_roster_id = team2.get('team_key')
-        matchup.team2_points = float(team2.get('team_points', {}).get('total', 0))
-        matchup.team2_projected = float(team2.get('team_projected_points', {}).get('total', 0))
+        matchup.team1_roster_id = team1_key
+        team1_points = YahooAPI._safe_get(team1, 'team_points', {})
+        team1_projected = YahooAPI._safe_get(team1, 'team_projected_points', {})
+        matchup.team1_points = float(YahooAPI._safe_get(team1_points, 'total', 0))
+        matchup.team1_projected = float(YahooAPI._safe_get(team1_projected, 'total', 0))
+
+        matchup.team2_roster_id = team2_key
+        team2_points = YahooAPI._safe_get(team2, 'team_points', {})
+        team2_projected = YahooAPI._safe_get(team2, 'team_projected_points', {})
+        matchup.team2_points = float(YahooAPI._safe_get(team2_points, 'total', 0))
+        matchup.team2_projected = float(YahooAPI._safe_get(team2_projected, 'total', 0))
         
         # Determine winner
         if matchup.team1_points > 0 or matchup.team2_points > 0:
@@ -446,6 +538,30 @@ async def _ingest_yahoo_matchups(
                 matchup.margin_of_victory = matchup.team2_points - matchup.team1_points
 
 
+def _extract_transactions_from_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Extract transactions list from Yahoo's nested response."""
+    league_data = response.get('league', {})
+    if isinstance(league_data, list):
+        for item in league_data:
+            if isinstance(item, dict) and 'transactions' in item:
+                trans_container = item['transactions']
+                if isinstance(trans_container, dict):
+                    return YahooAPI._ensure_list(trans_container.get('transaction'))
+    elif isinstance(league_data, dict):
+        trans_container = league_data.get('transactions', {})
+        if isinstance(trans_container, dict):
+            return YahooAPI._ensure_list(trans_container.get('transaction'))
+    return []
+
+
+def _extract_players_from_transaction(trans_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Extract players list from a transaction dict."""
+    players_container = trans_data.get('players', {})
+    if isinstance(players_container, dict):
+        return YahooAPI._ensure_list(players_container.get('player'))
+    return YahooAPI._ensure_list(players_container)
+
+
 async def _ingest_yahoo_transactions(
     api: YahooAPI,
     db: AsyncSession,
@@ -453,14 +569,14 @@ async def _ingest_yahoo_transactions(
     league_key: str
 ):
     """Ingest transaction data from Yahoo."""
-    transactions_data = await api.get_transactions(league_key)
-    
-    for trans_data in transactions_data:
-        transaction_key = trans_data.get('transaction_key')
+    transactions_response = await api.get_transactions(league_key)
+    transactions_list = _extract_transactions_from_response(transactions_response)
+
+    for trans_data in transactions_list:
+        transaction_key = YahooAPI._safe_get(trans_data, 'transaction_key')
         if not transaction_key:
             continue
-        
-        # Find or create transaction
+
         result = await db.execute(
             select(Transaction).filter(
                 Transaction.league_id == league.id,
@@ -468,17 +584,16 @@ async def _ingest_yahoo_transactions(
             )
         )
         transaction = result.scalar_one_or_none()
-        
+
         if not transaction:
             transaction = Transaction(
                 league_id=league.id,
                 provider_transaction_id=transaction_key,
-                week=trans_data.get('week', 1),
+                week=YahooAPI._safe_get(trans_data, 'week', 1),
             )
             db.add(transaction)
-        
-        # Map transaction type
-        trans_type = trans_data.get('type', 'add/drop')
+
+        trans_type = str(YahooAPI._safe_get(trans_data, 'type', 'add/drop'))
         if 'trade' in trans_type.lower():
             transaction.transaction_type = TransactionType.TRADE
         elif 'add' in trans_type.lower():
@@ -487,36 +602,40 @@ async def _ingest_yahoo_transactions(
             transaction.transaction_type = TransactionType.DROP
         else:
             transaction.transaction_type = TransactionType.WAIVER
-        
-        # Set status based on Yahoo status
-        status = trans_data.get('status', 'successful')
+
+        status = str(YahooAPI._safe_get(trans_data, 'status', 'successful'))
         if status == 'successful':
             transaction.status = TransactionStatus.COMPLETED
         elif status == 'pending':
             transaction.status = TransactionStatus.PENDING
         else:
             transaction.status = TransactionStatus.FAILED
-        
-        # Get team involved
-        players = trans_data.get('players', [])
+
+        players = _extract_players_from_transaction(trans_data)
         if players:
-            # Find the team that made the transaction
             for player in players:
-                if player.get('transaction_data'):
-                    transaction.roster_id = player['transaction_data'].get('destination_team_key')
-                    break
-        
-        # Store player data as JSON
+                player_trans_data = YahooAPI._safe_get(player, 'transaction_data', {})
+                if player_trans_data:
+                    # For ADDs, use destination_team_key; for DROPs, use source_team_key
+                    roster_id = YahooAPI._safe_get(player_trans_data, 'destination_team_key')
+                    if not roster_id:
+                        roster_id = YahooAPI._safe_get(player_trans_data, 'source_team_key')
+                    if roster_id:
+                        transaction.roster_id = roster_id
+                        break
+
         transaction.players_added = json.dumps([
-            p for p in players if p.get('transaction_data', {}).get('type') == 'add'
+            p for p in players
+            if YahooAPI._safe_get(YahooAPI._safe_get(p, 'transaction_data', {}), 'type') == 'add'
         ])
         transaction.players_dropped = json.dumps([
-            p for p in players if p.get('transaction_data', {}).get('type') == 'drop'
+            p for p in players
+            if YahooAPI._safe_get(YahooAPI._safe_get(p, 'transaction_data', {}), 'type') == 'drop'
         ])
-        
-        # Processing time
-        if trans_data.get('timestamp'):
-            transaction.processed_at = datetime.fromtimestamp(int(trans_data['timestamp']))
+
+        timestamp = YahooAPI._safe_get(trans_data, 'timestamp')
+        if timestamp:
+            transaction.processed_at = datetime.fromtimestamp(int(timestamp))
 
 
 async def _refresh_yahoo_token(db: AsyncSession, user: User) -> bool:

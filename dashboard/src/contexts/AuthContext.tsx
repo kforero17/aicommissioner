@@ -75,9 +75,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   const loginWithProvider = async (provider: string) => {
-    // Redirect to OAuth provider
     if (provider === 'yahoo') {
       window.location.href = `${API_BASE}/auth/yahoo/login`
+    } else if (provider === 'google') {
+      window.location.href = `${API_BASE}/auth/google/login`
+    } else if (provider === 'apple') {
+      alert('Apple Sign-In coming soon!')
     }
   }
 

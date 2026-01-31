@@ -26,7 +26,7 @@ export default function TermsOfService() {
             <section className="mb-8">
               <h2 className="text-xl font-semibold text-gray-900 mb-4">1. Acceptance of Terms</h2>
               <p className="text-gray-700 mb-4">
-                By accessing and using Hall of Fame LM ("the Service"), you accept and agree to be bound by the terms and provision of this agreement. If you do not agree to abide by the above, please do not use this service.
+                By accessing and using Hall of Fame LM (&quot;the Service&quot;), you accept and agree to be bound by the terms and provision of this agreement. If you do not agree to abide by the above, please do not use this service.
               </p>
             </section>
 
@@ -61,7 +61,7 @@ export default function TermsOfService() {
             <section className="mb-8">
               <h2 className="text-xl font-semibold text-gray-900 mb-4">6. Prohibited Uses</h2>
               <p className="text-gray-700 mb-4">
-                You may not use the Service for any illegal purpose or to violate any laws. You may not attempt to gain unauthorized access to our systems, interfere with the Service's operation, or use the Service to harass or harm others.
+                You may not use the Service for any illegal purpose or to violate any laws. You may not attempt to gain unauthorized access to our systems, interfere with the Service&apos;s operation, or use the Service to harass or harm others.
               </p>
             </section>
 

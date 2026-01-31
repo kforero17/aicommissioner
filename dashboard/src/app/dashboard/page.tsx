@@ -5,6 +5,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import Link from 'next/link'
 import { formatDistanceToNow } from 'date-fns'
+import { LeagueStatusStrip } from '@/components/LeagueStatusStrip'
 
 interface League {
   id: number
@@ -35,7 +36,7 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 function DashboardContent() {
   const { user, logout } = useAuth()
   const [leagues, setLeagues] = useState<League[]>([])
-  const [selectedWeek, setSelectedWeek] = useState(1)
+  const [leagueWeeks, setLeagueWeeks] = useState<Map<number, number>>(new Map())
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [syncStates, setSyncStates] = useState<SyncStates>(new Map())
@@ -44,6 +45,17 @@ function DashboardContent() {
   useEffect(() => {
     fetchLeagues()
   }, [])
+
+  // Initialize weeks from league data
+  useEffect(() => {
+    if (leagues.length > 0) {
+      const initialWeeks = new Map<number, number>()
+      leagues.forEach(league => {
+        initialWeeks.set(league.id, league.week || 1)
+      })
+      setLeagueWeeks(initialWeeks)
+    }
+  }, [leagues])
 
   // Auto-dismiss toast after 5 seconds
   useEffect(() => {
@@ -71,11 +83,6 @@ function DashboardContent() {
 
       const data = await response.json()
       setLeagues(data)
-
-      // Set default week to current week from first league
-      if (data.length > 0 && data[0].week) {
-        setSelectedWeek(data[0].week)
-      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load leagues')
     } finally {
@@ -133,8 +140,9 @@ function DashboardContent() {
   const handleSync = async (leagueId: number) => {
     try {
       setSyncStates(prev => new Map(prev).set(leagueId, { status: 'syncing' }))
+      const week = leagueWeeks.get(leagueId) || 1
 
-      const response = await fetch(`${API_BASE}/admin/leagues/${leagueId}/sync?week=${selectedWeek}`, {
+      const response = await fetch(`${API_BASE}/admin/leagues/${leagueId}/sync?week=${week}`, {
         method: 'POST',
         credentials: 'include',
         headers: {
@@ -195,7 +203,7 @@ function DashboardContent() {
       case 'failure':
         return '⚠ Failed - Retry?'
       default:
-        return `Sync Week ${selectedWeek}`
+        return 'Sync'
     }
   }
 
@@ -253,30 +261,12 @@ function DashboardContent() {
             </p>
           </div>
 
-          <div className="flex items-center gap-4">
-            {/* Week Selector */}
-            <div className="flex items-center gap-2">
-              <label htmlFor="week" className="text-sm font-medium text-gray-700">
-                Week to sync:
-              </label>
-              <input
-                id="week"
-                type="number"
-                min="1"
-                max="18"
-                value={selectedWeek}
-                onChange={(e) => setSelectedWeek(parseInt(e.target.value) || 1)}
-                className="w-20 px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-              />
-            </div>
-
-            <button
+          <button
               onClick={logout}
               className="text-gray-600 hover:text-gray-900 px-4 py-2 rounded-md text-sm font-medium transition-colors border border-gray-300 hover:bg-gray-50"
             >
               Sign Out
             </button>
-          </div>
         </div>
 
         {/* Error State */}
@@ -290,6 +280,13 @@ function DashboardContent() {
                 <p className="text-sm font-medium text-red-800">{error}</p>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* League Status Strip - shows status for first active league */}
+        {leagues.length > 0 && (
+          <div className="mb-6">
+            <LeagueStatusStrip leagueId={leagues[0].id} />
           </div>
         )}
 
@@ -337,7 +334,9 @@ function DashboardContent() {
                     <tr key={league.id} className="hover:bg-gray-50 transition-colors">
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="text-sm font-bold text-gray-900">{league.name}</div>
-                        <div className="text-xs text-gray-500">Season {league.season}</div>
+                        <div className="text-xs text-gray-500">
+                          Season {league.season} • Week {league.week || '—'}
+                        </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
@@ -362,6 +361,26 @@ function DashboardContent() {
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                         <div className="flex items-center justify-end gap-3">
+                          <div className="flex items-center gap-1">
+                            <span className="text-xs text-gray-500">Week</span>
+                            <input
+                              type="number"
+                              min="1"
+                              max="18"
+                              value={leagueWeeks.get(league.id) || league.week || 1}
+                              onChange={(e) => {
+                                const week = parseInt(e.target.value) || 1
+                                setLeagueWeeks(prev => new Map(prev).set(league.id, week))
+                              }}
+                              className="w-14 px-2 py-1 text-sm border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500"
+                            />
+                          </div>
+                          <Link
+                            href={`/league/${league.id}`}
+                            className="text-blue-600 hover:text-blue-800 font-medium transition-colors"
+                          >
+                            View League
+                          </Link>
                           <button
                             onClick={() => handleSync(league.id)}
                             disabled={isSyncDisabled(league.id)}
@@ -396,7 +415,7 @@ function DashboardContent() {
                   <div className="flex items-start justify-between mb-3">
                     <div>
                       <h3 className="text-sm font-bold text-gray-900">{league.name}</h3>
-                      <p className="text-xs text-gray-500">Season {league.season}</p>
+                      <p className="text-xs text-gray-500">Season {league.season} • Week {league.week || '—'}</p>
                     </div>
                     <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
                       league.is_active
@@ -424,26 +443,48 @@ function DashboardContent() {
                     </div>
                   </div>
 
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => handleSync(league.id)}
-                      disabled={isSyncDisabled(league.id)}
-                      className={`flex-1 inline-flex items-center justify-center px-3 py-2 border text-sm font-medium rounded-md transition-colors ${
-                        isSyncDisabled(league.id)
-                          ? 'border-gray-300 bg-gray-100 text-gray-400 cursor-not-allowed'
-                          : syncStates.get(league.id)?.status === 'failure'
-                          ? 'border-red-300 bg-red-50 text-red-700'
-                          : 'border-blue-300 bg-blue-50 text-blue-700'
-                      }`}
-                    >
-                      {getSyncButtonContent(league.id)}
-                    </button>
+                  <div className="flex flex-col gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-gray-500 whitespace-nowrap">Sync Week:</span>
+                      <input
+                        type="number"
+                        min="1"
+                        max="18"
+                        value={leagueWeeks.get(league.id) || league.week || 1}
+                        onChange={(e) => {
+                          const week = parseInt(e.target.value) || 1
+                          setLeagueWeeks(prev => new Map(prev).set(league.id, week))
+                        }}
+                        className="flex-1 px-2 py-1 text-sm border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500"
+                      />
+                    </div>
                     <Link
-                      href={`/settings/${league.id}`}
-                      className="flex-1 inline-flex items-center justify-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
+                      href={`/league/${league.id}`}
+                      className="w-full inline-flex items-center justify-center px-3 py-2 border border-blue-300 text-sm font-medium rounded-md text-blue-700 bg-blue-50 hover:bg-blue-100 transition-colors"
                     >
-                      Settings →
+                      View League
                     </Link>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => handleSync(league.id)}
+                        disabled={isSyncDisabled(league.id)}
+                        className={`flex-1 inline-flex items-center justify-center px-3 py-2 border text-sm font-medium rounded-md transition-colors ${
+                          isSyncDisabled(league.id)
+                            ? 'border-gray-300 bg-gray-100 text-gray-400 cursor-not-allowed'
+                            : syncStates.get(league.id)?.status === 'failure'
+                            ? 'border-red-300 bg-red-50 text-red-700'
+                            : 'border-blue-300 bg-blue-50 text-blue-700'
+                        }`}
+                      >
+                        {getSyncButtonContent(league.id)}
+                      </button>
+                      <Link
+                        href={`/settings/${league.id}`}
+                        className="flex-1 inline-flex items-center justify-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
+                      >
+                        Settings →
+                      </Link>
+                    </div>
                   </div>
                 </div>
               ))}

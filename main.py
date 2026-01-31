@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 from config import settings
-from api.routes import auth, admin, webhooks
+from api.routes import auth, admin, webhooks, members
 from database.connection import init_db
 
 # Disable SSL verification in debug mode (corporate network workaround)
@@ -60,7 +60,7 @@ def create_app() -> FastAPI:
         settings.frontend_url,
         "http://localhost:3000",
         "http://localhost:3003",
-        "https://muze-coral-carol-furnishings.trycloudflare.com",  # Cloudflare Tunnel
+        "https://republic-absorption-resolved-amy.trycloudflare.com",  # Cloudflare Tunnel
     ] if settings.debug else [settings.frontend_url]
 
     app.add_middleware(
@@ -75,6 +75,7 @@ def create_app() -> FastAPI:
     app.include_router(auth.router, prefix="/auth", tags=["authentication"])
     app.include_router(admin.router, prefix="/admin", tags=["admin"])
     app.include_router(webhooks.router, prefix="/webhooks", tags=["webhooks"])
+    app.include_router(members.router, tags=["members"])
     
     @app.on_event("startup")
     async def startup_event():

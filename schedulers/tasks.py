@@ -68,16 +68,24 @@ def sync_specific_league(league_id: int, provider: str, provider_league_id: str)
 
 
 @shared_task
-def generate_manual_recap(league_id: int, recap_type: str, week: Optional[int] = None):
+def generate_manual_recap(
+    league_id: int,
+    recap_type: str,
+    week: Optional[int] = None,
+    preview_only: bool = False,
+    test_mode: bool = False
+):
     """
     Task to generate a manual recap for a league.
-    
+
     Args:
         league_id: Internal league ID
         recap_type: Type of recap ("power_rankings" or "waiver_recap")
         week: Optional week number
+        preview_only: If True, generate but don't publish
+        test_mode: If True, prefix header with [TEST]
     """
-    return asyncio.run(_generate_manual_recap(league_id, recap_type, week))
+    return asyncio.run(_generate_manual_recap(league_id, recap_type, week, preview_only, test_mode))
 
 
 @shared_task
@@ -100,6 +108,35 @@ def health_check():
     Runs every 15 minutes.
     """
     return asyncio.run(_health_check())
+
+
+@shared_task
+def import_yahoo_leagues_task(user_id: int):
+    """
+    Task to import Yahoo leagues for a user with progress tracking.
+
+    Args:
+        user_id: Internal user ID
+
+    Returns:
+        dict: Result status with message
+    """
+    return asyncio.run(_import_yahoo_leagues_task(user_id))
+
+
+@shared_task
+def import_sleeper_league_task(league_id: str, owner_id: int):
+    """
+    Task to import a single Sleeper league with progress tracking.
+
+    Args:
+        league_id: Sleeper league ID
+        owner_id: Internal user ID who owns this league
+
+    Returns:
+        dict: Result status with message
+    """
+    return asyncio.run(_import_sleeper_league_task(league_id, owner_id))
 
 
 # Async implementations
@@ -274,18 +311,53 @@ async def _sync_specific_league(league_id: int, provider: str, provider_league_i
         return {"status": "error", "message": str(e)}
 
 
-async def _generate_manual_recap(league_id: int, recap_type: str, week: Optional[int] = None):
+async def _generate_manual_recap(
+    league_id: int,
+    recap_type: str,
+    week: Optional[int] = None,
+    preview_only: bool = False,
+    test_mode: bool = False
+):
     """Generate a manual recap."""
     try:
-        if recap_type == "power_rankings":
-            await run_power_rankings(league_id, week)
-        elif recap_type == "waiver_recap":
-            await run_waiver_recap(league_id, week)
-        else:
-            return {"status": "error", "message": f"Unknown recap type: {recap_type}"}
-        
-        return {"status": "success", "message": f"Generated {recap_type} for league {league_id}"}
-        
+        # Import RecapService for direct control
+        from services.recap_service import RecapService
+
+        service = RecapService()
+        try:
+            content = None
+
+            if recap_type == "power_rankings":
+                content = await service.generate_power_rankings_recap(
+                    league_id,
+                    week,
+                    publish=not preview_only,
+                    test_mode=test_mode
+                )
+            elif recap_type == "waiver_recap":
+                content = await service.generate_waiver_recap(
+                    league_id,
+                    week,
+                    publish=not preview_only,
+                    test_mode=test_mode
+                )
+            else:
+                return {"status": "error", "message": f"Unknown recap type: {recap_type}"}
+
+            result = {
+                "status": "success",
+                "message": f"Generated {recap_type} for league {league_id}",
+                "content": content
+            }
+
+            if preview_only:
+                result["message"] = f"Preview generated for {recap_type} (not published)"
+
+            return result
+
+        finally:
+            await service.close()
+
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
@@ -335,7 +407,7 @@ async def _health_check():
         "active_leagues": 0,
         "status": "healthy"
     }
-    
+
     try:
         # Check database connectivity
         async with AsyncSessionLocal() as db:
@@ -346,8 +418,83 @@ async def _health_check():
     except Exception as e:
         health_status["database"] = f"error: {str(e)}"
         health_status["status"] = "unhealthy"
-    
+
     # Check Redis (Celery broker) - implicit if this task is running
     health_status["redis"] = "healthy"
-    
+
     return health_status
+
+
+async def _import_yahoo_leagues_task(user_id: int):
+    """
+    Import Yahoo leagues with progress tracking.
+
+    Args:
+        user_id: Internal user ID
+
+    Returns:
+        dict: Result status with message and league count
+    """
+    try:
+        success = await ingest_yahoo_leagues(user_id)
+
+        if success:
+            # Count imported leagues
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(
+                    select(League).filter(
+                        League.provider == ProviderType.YAHOO,
+                        League.owner_id == user_id
+                    )
+                )
+                leagues = result.scalars().all()
+                league_count = len(leagues)
+
+            return {
+                "status": "success",
+                "message": f"Successfully imported {league_count} Yahoo league(s)",
+                "league_count": league_count
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "Failed to import Yahoo leagues - check user credentials"
+            }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Error importing Yahoo leagues: {str(e)}"
+        }
+
+
+async def _import_sleeper_league_task(league_id: str, owner_id: int):
+    """
+    Import a single Sleeper league with progress tracking.
+
+    Args:
+        league_id: Sleeper league ID
+        owner_id: Internal user ID who owns this league
+
+    Returns:
+        dict: Result status with message
+    """
+    try:
+        success = await ingest_sleeper_league(league_id, owner_id=owner_id)
+
+        if success:
+            return {
+                "status": "success",
+                "message": f"Successfully imported Sleeper league {league_id}"
+            }
+        else:
+            return {
+                "status": "error",
+                "message": f"Failed to import Sleeper league {league_id}"
+            }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Error importing Sleeper league: {str(e)}"
+        }
