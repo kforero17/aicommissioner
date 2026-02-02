@@ -1372,6 +1372,11 @@ class RecapResponse(BaseModel):
     ai_persona: Optional[str] = None
     published_at: Optional[str] = None
     created_at: str
+    # Observability fields
+    generation_metadata: Optional[dict] = None
+    error_message: Optional[str] = None
+    llm_model: Optional[str] = None
+    llm_latency_ms: Optional[int] = None
 
 
 class RecapListResponse(BaseModel):
@@ -1379,6 +1384,34 @@ class RecapListResponse(BaseModel):
     recaps: List[RecapResponse]
     total: int
     has_more: bool
+
+
+def _recap_to_response(recap: Recap) -> RecapResponse:
+    """Convert a Recap model to RecapResponse, parsing generation_metadata JSON."""
+    metadata_dict = None
+    if recap.generation_metadata:
+        try:
+            metadata_dict = json.loads(recap.generation_metadata)
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    return RecapResponse(
+        id=recap.id,
+        recap_type=recap.recap_type.value,
+        week=recap.week,
+        season=recap.season,
+        title=recap.title,
+        content=recap.content,
+        status=recap.status.value,
+        rendering_mode=recap.rendering_mode,
+        ai_persona=recap.ai_persona,
+        published_at=recap.published_at.isoformat() if recap.published_at else None,
+        created_at=recap.created_at.isoformat(),
+        generation_metadata=metadata_dict,
+        error_message=recap.error_message,
+        llm_model=recap.llm_model,
+        llm_latency_ms=recap.llm_latency_ms,
+    )
 
 
 @router.get("/leagues/{league_id}/recaps", response_model=RecapListResponse)
@@ -1472,22 +1505,7 @@ async def get_league_recaps(
     has_more = len(recaps) > limit
     recaps = recaps[:limit]
 
-    recap_responses = [
-        RecapResponse(
-            id=recap.id,
-            recap_type=recap.recap_type.value,
-            week=recap.week,
-            season=recap.season,
-            title=recap.title,
-            content=recap.content,
-            status=recap.status.value,
-            rendering_mode=recap.rendering_mode,
-            ai_persona=recap.ai_persona,
-            published_at=recap.published_at.isoformat() if recap.published_at else None,
-            created_at=recap.created_at.isoformat()
-        )
-        for recap in recaps
-    ]
+    recap_responses = [_recap_to_response(recap) for recap in recaps]
 
     return RecapListResponse(
         recaps=recap_responses,
@@ -1557,19 +1575,7 @@ async def get_latest_recaps(
         )
         recap = result.scalar_one_or_none()
         if recap:
-            latest_recaps.append(RecapResponse(
-                id=recap.id,
-                recap_type=recap.recap_type.value,
-                week=recap.week,
-                season=recap.season,
-                title=recap.title,
-                content=recap.content,
-                status=recap.status.value,
-                rendering_mode=recap.rendering_mode,
-                ai_persona=recap.ai_persona,
-                published_at=recap.published_at.isoformat() if recap.published_at else None,
-                created_at=recap.created_at.isoformat()
-            ))
+            latest_recaps.append(_recap_to_response(recap))
 
     return latest_recaps
 
@@ -1623,16 +1629,116 @@ async def get_recap_by_id(
             detail="Recap not found"
         )
 
-    return RecapResponse(
-        id=recap.id,
-        recap_type=recap.recap_type.value,
-        week=recap.week,
-        season=recap.season,
-        title=recap.title,
-        content=recap.content,
-        status=recap.status.value,
-        rendering_mode=recap.rendering_mode,
-        ai_persona=recap.ai_persona,
-        published_at=recap.published_at.isoformat() if recap.published_at else None,
-        created_at=recap.created_at.isoformat()
+    return _recap_to_response(recap)
+
+
+class RetryPublishResponse(BaseModel):
+    """Response for retry publish operation."""
+    success: bool
+    message: str
+    recap_id: int
+    new_status: str
+
+
+@router.post("/recaps/{recap_id}/retry-publish", response_model=RetryPublishResponse)
+async def retry_publish_recap(
+    recap_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Retry publishing a failed recap.
+
+    This endpoint allows commissioners to retry publishing a recap that
+    previously failed to publish. Works for recaps in DRAFT or PUBLISH_FAILED
+    status that have content generated.
+
+    This is useful when:
+    - GroupMe was temporarily down
+    - Email service had issues
+    - Network problems occurred during publishing
+
+    Args:
+        recap_id: ID of the recap to retry publishing
+        current_user: Authenticated user from dependency injection
+        db: Database session from dependency injection
+
+    Returns:
+        RetryPublishResponse with success status and new recap status
+
+    Raises:
+        HTTPException: If recap not found, user doesn't have access,
+                      or recap is not in a retryable state
+    """
+    # Get the recap first
+    result = await db.execute(
+        select(Recap).filter(Recap.id == recap_id)
     )
+    recap = result.scalar_one_or_none()
+
+    if not recap:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Recap not found"
+        )
+
+    # Check user has access to the league
+    result = await db.execute(
+        select(League).filter(League.id == recap.league_id)
+    )
+    league = result.scalar_one_or_none()
+
+    if not league:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="League not found"
+        )
+
+    is_owner = league.owner_id == current_user.id
+    if not is_owner:
+        result = await db.execute(
+            select(LeagueMember).filter(
+                LeagueMember.league_id == recap.league_id,
+                LeagueMember.user_id == current_user.id,
+                LeagueMember.joined_at.isnot(None)
+            )
+        )
+        member = result.scalar_one_or_none()
+        if not member:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have access to this league"
+            )
+
+    # Use RecapService to retry publishing
+    from services.recap_service import RecapService
+
+    service = RecapService()
+    try:
+        success = await service.retry_publish(recap_id)
+
+        # Refresh the recap to get updated status
+        await db.refresh(recap)
+
+        if success:
+            return RetryPublishResponse(
+                success=True,
+                message="Recap successfully published",
+                recap_id=recap_id,
+                new_status=recap.status.value
+            )
+        else:
+            return RetryPublishResponse(
+                success=False,
+                message=f"Publishing failed: {recap.error_message or 'Unknown error'}",
+                recap_id=recap_id,
+                new_status=recap.status.value
+            )
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    finally:
+        await service.close()

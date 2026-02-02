@@ -30,17 +30,17 @@ async def migrate():
         print("Creating league_members table...")
         await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS league_members (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 league_id INTEGER NOT NULL,
                 user_id INTEGER,
                 role VARCHAR(20) NOT NULL DEFAULT 'member',
                 invite_token VARCHAR(64) UNIQUE,
                 invite_email VARCHAR(255),
-                invited_at TIMESTAMP,
-                joined_at TIMESTAMP,
+                invited_at TIMESTAMP WITH TIME ZONE,
+                joined_at TIMESTAMP WITH TIME ZONE,
                 preferences TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (league_id) REFERENCES leagues(id) ON DELETE CASCADE,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             )
@@ -84,7 +84,7 @@ async def migrate():
 
             if count == 0:
                 # Create commissioner membership
-                now = datetime.utcnow().isoformat()
+                now = datetime.utcnow()
                 await session.execute(
                     text("""
                         INSERT INTO league_members

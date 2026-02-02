@@ -65,11 +65,13 @@ interface RecapData {
   season: number
   title: string
   content: string
-  status: string
+  status: 'draft' | 'published' | 'failed' | 'publish_failed'
   rendering_mode: string | null
   ai_persona: string | null
   published_at: string | null
   created_at: string
+  error_message: string | null
+  generation_metadata: Record<string, unknown> | null
 }
 
 interface RecapListResponse {
@@ -196,12 +198,16 @@ export default function LeagueHubPage() {
     if (league && activeTab === 'feed') {
       fetchRecaps()
     }
-  }, [activeTab, league, feedFilter])
+  }, [activeTab, league, feedFilter, access])
 
   const fetchRecaps = async () => {
     try {
       setRecapsLoading(true)
-      let url = `${API_BASE}/admin/leagues/${leagueId}/recaps?status_filter=published&limit=50`
+      const isCommissioner = access?.role === 'commissioner' || access?.is_owner
+
+      // For commissioners, fetch all statuses; for others, only published
+      const statusFilter = isCommissioner ? '' : 'status_filter=published&'
+      let url = `${API_BASE}/admin/leagues/${leagueId}/recaps?${statusFilter}limit=50`
       if (feedFilter) {
         url += `&recap_type=${feedFilter}`
       }
@@ -221,6 +227,28 @@ export default function LeagueHubPage() {
       console.error('Failed to fetch recaps:', err)
     } finally {
       setRecapsLoading(false)
+    }
+  }
+
+  const handleRetryPublish = async (recapId: number) => {
+    try {
+      const response = await fetch(`${API_BASE}/admin/recaps/${recapId}/retry-publish`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      })
+
+      if (response.ok) {
+        // Refresh recaps to show updated status
+        await fetchRecaps()
+      } else {
+        const error = await response.json()
+        console.error('Retry publish failed:', error)
+      }
+    } catch (err) {
+      console.error('Failed to retry publish:', err)
     }
   }
 
@@ -527,6 +555,8 @@ export default function LeagueHubPage() {
               setFeedFilter={setFeedFilter}
               preferences={preferences}
               leagueId={leagueId}
+              isCommissioner={access?.role === 'commissioner' || access?.is_owner || false}
+              onRetryPublish={handleRetryPublish}
             />
           )}
 
@@ -677,15 +707,18 @@ function HomeTab({ leaderTeam, matchups, standings, standingsLoading, matchupsLo
 }
 
 // Feed Tab Component
-function FeedTab({ recaps, recapsLoading, feedFilter, setFeedFilter, preferences, leagueId }: {
+function FeedTab({ recaps, recapsLoading, feedFilter, setFeedFilter, preferences, leagueId, isCommissioner, onRetryPublish }: {
   recaps: RecapData[]
   recapsLoading: boolean
   feedFilter: string | null
   setFeedFilter: (filter: string | null) => void
   preferences: { mute_waivers: boolean; mute_power_rankings: boolean; mute_weekly_recaps: boolean }
   leagueId: string
+  isCommissioner: boolean
+  onRetryPublish: (recapId: number) => Promise<void>
 }) {
   const [expandedRecap, setExpandedRecap] = useState<number | null>(null)
+  const [retryingId, setRetryingId] = useState<number | null>(null)
 
   const filteredRecaps = recaps.filter(recap => {
     if (recap.recap_type === 'power_rankings' && preferences.mute_power_rankings) return false
@@ -735,6 +768,57 @@ function FeedTab({ recaps, recapsLoading, feedFilter, setFeedFilter, preferences
         return <span className="px-2 py-1 text-xs font-medium rounded-full bg-purple-100 text-purple-800">Weekly Recap</span>
       default:
         return null
+    }
+  }
+
+  const getStatusBadge = (status: RecapData['status']) => {
+    switch (status) {
+      case 'published':
+        return (
+          <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-green-100 text-green-800">
+            Published
+          </span>
+        )
+      case 'draft':
+        return (
+          <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-yellow-100 text-yellow-800">
+            Draft
+          </span>
+        )
+      case 'failed':
+        return (
+          <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-red-100 text-red-800">
+            Failed
+          </span>
+        )
+      case 'publish_failed':
+        return (
+          <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-orange-100 text-orange-800">
+            Publish Failed
+          </span>
+        )
+      default:
+        return null
+    }
+  }
+
+  const getRenderingModeBadge = (mode: string | null) => {
+    if (!mode) return null
+    const modeDisplay = mode === 'llm' ? 'AI Enhanced' : mode === 'deterministic' ? 'Template' : mode === 'fallback' ? 'Fallback' : mode
+    const modeColor = mode === 'llm' ? 'bg-indigo-100 text-indigo-700' : 'bg-gray-100 text-gray-600'
+    return (
+      <span className={`px-2 py-0.5 text-xs font-medium rounded ${modeColor}`}>
+        {modeDisplay}
+      </span>
+    )
+  }
+
+  const handleRetry = async (recapId: number) => {
+    setRetryingId(recapId)
+    try {
+      await onRetryPublish(recapId)
+    } finally {
+      setRetryingId(null)
     }
   }
 
@@ -795,20 +879,54 @@ function FeedTab({ recaps, recapsLoading, feedFilter, setFeedFilter, preferences
               {filteredRecaps.map((recap) => (
                 <div
                   key={recap.id}
-                  className="border border-gray-200 rounded-lg p-6 hover:shadow-md transition-shadow bg-white"
+                  className={`border rounded-lg p-6 hover:shadow-md transition-shadow bg-white ${
+                    recap.status === 'failed' || recap.status === 'publish_failed'
+                      ? 'border-red-200 bg-red-50'
+                      : recap.status === 'draft'
+                      ? 'border-yellow-200 bg-yellow-50'
+                      : 'border-gray-200'
+                  }`}
                 >
                   <div className="flex items-start space-x-4">
                     {getRecapIcon(recap.recap_type)}
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between flex-wrap gap-2">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <h3 className="text-lg font-semibold text-gray-900">{recap.title}</h3>
                           {getRecapTypeBadge(recap.recap_type)}
+                          {getStatusBadge(recap.status)}
                         </div>
                         <span className="text-sm text-gray-500">
                           {formatDate(recap.published_at || recap.created_at)}
                         </span>
                       </div>
+
+                      {/* Failed state message and retry button */}
+                      {(recap.status === 'failed' || recap.status === 'publish_failed') && isCommissioner && (
+                        <div className="mt-3 p-3 bg-red-100 border border-red-200 rounded-lg">
+                          <div className="flex items-start justify-between gap-4">
+                            <div className="flex-1">
+                              <p className="text-sm font-medium text-red-800">
+                                {recap.status === 'publish_failed'
+                                  ? 'Publishing failed, content generated'
+                                  : 'Generation failed'}
+                              </p>
+                              {recap.error_message && (
+                                <p className="text-xs text-red-700 mt-1">{recap.error_message}</p>
+                              )}
+                            </div>
+                            {recap.status === 'publish_failed' && (
+                              <button
+                                onClick={() => handleRetry(recap.id)}
+                                disabled={retryingId === recap.id}
+                                className="flex-shrink-0 px-3 py-1.5 text-sm font-medium text-white bg-red-600 hover:bg-red-700 disabled:bg-red-400 rounded-md transition-colors"
+                              >
+                                {retryingId === recap.id ? 'Retrying...' : 'Retry'}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      )}
 
                       <div className="mt-3">
                         <div className={`prose prose-sm max-w-none text-gray-700 whitespace-pre-wrap ${
@@ -827,12 +945,23 @@ function FeedTab({ recaps, recapsLoading, feedFilter, setFeedFilter, preferences
                         )}
                       </div>
 
-                      {recap.ai_persona && (
-                        <div className="mt-3 flex items-center gap-2">
-                          <span className="text-xs text-gray-500">AI Style:</span>
-                          <span className="px-2 py-0.5 text-xs font-medium rounded bg-gray-100 text-gray-700 capitalize">
-                            {recap.ai_persona}
-                          </span>
+                      {/* Metadata row: rendering mode + ai persona */}
+                      {(recap.rendering_mode || recap.ai_persona) && (
+                        <div className="mt-3 flex items-center gap-3 flex-wrap">
+                          {recap.rendering_mode && (
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-xs text-gray-500">Mode:</span>
+                              {getRenderingModeBadge(recap.rendering_mode)}
+                            </div>
+                          )}
+                          {recap.ai_persona && (
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-xs text-gray-500">Persona:</span>
+                              <span className="px-2 py-0.5 text-xs font-medium rounded bg-gray-100 text-gray-700 capitalize">
+                                {recap.ai_persona}
+                              </span>
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>

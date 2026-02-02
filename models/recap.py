@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Optional
 from enum import Enum
 
-from sqlalchemy import ForeignKey, String, Text, Integer, DateTime, Enum as SQLEnum
+from sqlalchemy import ForeignKey, String, Text, Integer, DateTime, Enum as SQLEnum, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -18,10 +18,18 @@ class RecapType(str, Enum):
 
 
 class RecapStatus(str, Enum):
-    """Publication status of a recap."""
+    """Publication status of a recap.
+
+    State machine flow:
+    - DRAFT: Created immediately, may have no content yet or content generated
+    - PUBLISHED: Content generated and successfully published to channels
+    - FAILED: Content generation failed (no content to publish)
+    - PUBLISH_FAILED: Content generated but publishing to channels failed (can retry)
+    """
     DRAFT = "draft"
     PUBLISHED = "published"
     FAILED = "failed"
+    PUBLISH_FAILED = "publish_failed"  # Content generated but publishing failed
 
 
 class Recap(Base):
@@ -33,6 +41,15 @@ class Recap(Base):
     """
 
     __tablename__ = "recaps"
+    __table_args__ = (
+        # Idempotency constraint: prevents duplicate recaps when Celery retries or manual sync spam
+        # Uses functional index on COALESCE(ai_persona, '') to handle NULL persona values
+        Index(
+            'uq_recaps_league_season_week_type_persona',
+            'league_id', 'season', 'week', 'recap_type',
+            unique=True,
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     league_id: Mapped[int] = mapped_column(
@@ -75,6 +92,38 @@ class Recap(Base):
     publish_channels: Mapped[Optional[str]] = mapped_column(
         Text,
         nullable=True
+    )
+
+    # Observability and debugging fields
+    generation_metadata: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+        comment="JSON blob: facts pack, scores, transaction IDs, derived picks, warnings"
+    )
+    error_message: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+        comment="Stores failure reason if status=failed"
+    )
+    llm_model: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        nullable=True,
+        comment="LLM model used for generation (e.g., gpt-4o-mini)"
+    )
+    llm_latency_ms: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        nullable=True,
+        comment="LLM API call latency in milliseconds"
+    )
+    tokens_in: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        nullable=True,
+        comment="Input tokens sent to LLM"
+    )
+    tokens_out: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        nullable=True,
+        comment="Output tokens received from LLM"
     )
 
     created_at: Mapped[datetime] = mapped_column(

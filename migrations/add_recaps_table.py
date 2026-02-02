@@ -25,7 +25,7 @@ async def migrate():
         print("Creating recaps table...")
         await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS recaps (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 league_id INTEGER NOT NULL,
                 recap_type VARCHAR(20) NOT NULL,
                 week INTEGER NOT NULL,
@@ -35,10 +35,10 @@ async def migrate():
                 status VARCHAR(20) NOT NULL DEFAULT 'draft',
                 rendering_mode VARCHAR(50),
                 ai_persona VARCHAR(50),
-                published_at TIMESTAMP,
+                published_at TIMESTAMP WITH TIME ZONE,
                 publish_channels TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (league_id) REFERENCES leagues(id) ON DELETE CASCADE
             )
         """))
