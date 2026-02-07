@@ -16,8 +16,9 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Callable, Awaitable, Any
 from enum import Enum
 
+import backoff
 from openai import AsyncOpenAI, APIError, APIConnectionError, RateLimitError, APITimeoutError
-from anthropic import Anthropic, APIError as AnthropicAPIError
+from anthropic import Anthropic, APIError as AnthropicAPIError, RateLimitError as AnthropicRateLimitError
 
 from ai_text.summary_generator import WeeklySummary
 
@@ -491,8 +492,20 @@ class LLMHandler:
 
         return self._fallback_to_deterministic(summary, style, warnings, start_time)
 
+    @backoff.on_exception(
+        backoff.expo,
+        RateLimitError,
+        max_tries=5,
+        max_time=60,
+        on_backoff=lambda details: logger.info(
+            f"OpenAI rate limited, backing off {details['wait']:.1f}s (attempt {details['tries']})"
+        ),
+    )
     async def _call_openai_with_timeout(self, prompt: str) -> str:
-        """Call OpenAI API with timeout.
+        """Call OpenAI API with timeout and exponential backoff for rate limits.
+
+        Uses exponential backoff (via backoff library) for rate limit errors.
+        Max 5 retries or 60 seconds total backoff time.
 
         Args:
             prompt: Prompt to send
@@ -521,8 +534,20 @@ class LLMHandler:
             logger.warning("OpenAI API call timed out", extra={"timeout_seconds": self.DEFAULT_TIMEOUT_SECONDS})
             raise
 
+    @backoff.on_exception(
+        backoff.expo,
+        AnthropicRateLimitError,
+        max_tries=5,
+        max_time=60,
+        on_backoff=lambda details: logger.info(
+            f"Anthropic rate limited, backing off {details['wait']:.1f}s (attempt {details['tries']})"
+        ),
+    )
     async def _call_anthropic_with_timeout(self, prompt: str) -> str:
-        """Call Anthropic API with timeout.
+        """Call Anthropic API with timeout and exponential backoff for rate limits.
+
+        Uses exponential backoff (via backoff library) for rate limit errors.
+        Max 5 retries or 60 seconds total backoff time.
 
         Args:
             prompt: Prompt to send
@@ -621,6 +646,70 @@ Rewritten recap:
             provider=None,
             latency_ms=latency_ms
         )
+
+    async def call_prompt(self, prompt: str, provider: str = "openai") -> Optional[str]:
+        """Call LLM with a pre-built prompt.
+
+        This is a simplified interface for generators to send prompts directly.
+        Rate limits are handled via exponential backoff (decorator on _call_*_with_timeout).
+        Circuit breaker tracks failures and prevents cascading issues.
+
+        Args:
+            prompt: The complete prompt to send to the LLM
+            provider: LLM provider to use ("openai" or "anthropic")
+
+        Returns:
+            Generated text from the LLM, or None on failure
+        """
+        if provider not in ["openai", "anthropic"]:
+            logger.warning(f"Invalid provider '{provider}', returning None")
+            return None
+
+        client = self.openai_client if provider == "openai" else self.anthropic_client
+        if not client:
+            logger.warning(f"{provider} client not configured, returning None")
+            return None
+
+        circuit = self.circuit_breakers[provider]
+        can_attempt, reason = circuit.can_attempt()
+
+        if not can_attempt:
+            logger.warning(
+                "LLM call blocked by circuit breaker",
+                extra={
+                    "provider": provider,
+                    "reason": reason,
+                    "circuit_status": circuit.get_status(),
+                }
+            )
+            return None
+
+        try:
+            if provider == "openai":
+                text = await self._call_openai_with_timeout(prompt)
+            else:
+                text = await self._call_anthropic_with_timeout(prompt)
+
+            circuit.record_success()
+            logger.info("LLM call_prompt succeeded", extra={"provider": provider})
+            return text
+
+        except Exception as e:
+            if provider == "openai":
+                error_type, _ = ErrorClassifier.classify_openai_error(e)
+            else:
+                error_type, _ = ErrorClassifier.classify_anthropic_error(e)
+
+            logger.warning(
+                "LLM call_prompt failed",
+                extra={
+                    "provider": provider,
+                    "error_type": error_type,
+                    "error_message": str(e),
+                }
+            )
+            circuit.record_failure(error_type)
+            return None
 
     def get_circuit_status(self) -> dict[str, dict[str, Any]]:
         """Get status of all circuit breakers for monitoring.

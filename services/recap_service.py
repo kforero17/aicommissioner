@@ -149,6 +149,8 @@ class RecapService:
         self.power_rankings_generator = PowerRankingsGenerator()
         self.waiver_generator = WaiverRecapGenerator()
         self.weekly_generator = WeeklyRecapGenerator()
+        # Reuse TextFormatter's LLM handler (shares circuit breaker state)
+        self.llm_handler = self.formatter.llm_handler
 
     async def close(self):
         """Clean up resources."""
@@ -378,7 +380,7 @@ class RecapService:
                     summary=summary,
                     persona=league.ai_persona_style if league.enable_llm_rendering else None,
                     use_llm=league.enable_llm_rendering,
-                    llm_handler=None  # For now, use deterministic only; LLM integration comes later
+                    llm_handler=self.llm_handler if league.enable_llm_rendering else None
                 )
 
                 recap_text = generator_result.content
@@ -595,7 +597,7 @@ class RecapService:
                         summary=summary,
                         persona=league.ai_persona_style if league.enable_llm_rendering else None,
                         use_llm=league.enable_llm_rendering,
-                        llm_handler=None  # For now, use deterministic only; LLM integration comes later
+                        llm_handler=self.llm_handler if league.enable_llm_rendering else None
                     )
 
                     recap_text = generator_result.content

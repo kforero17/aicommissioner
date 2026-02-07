@@ -19,12 +19,12 @@ class Settings(BaseSettings):
     # Yahoo OAuth
     yahoo_client_id: Optional[str] = None
     yahoo_client_secret: Optional[str] = None
-    yahoo_redirect_uri: str = "https://localhost:8000/auth/yahoo/callback"
+    yahoo_redirect_uri: str = "https://gate-penny-arrivals-andreas.trycloudflare.com/auth/yahoo/callback"
 
     # Google OAuth
     google_client_id: Optional[str] = None
     google_client_secret: Optional[str] = None
-    google_redirect_uri: str = "https://localhost:8000/auth/google/callback"
+    google_redirect_uri: str = "https://gate-penny-arrivals-andreas.trycloudflare.com/auth/google/callback"
     
     # AI Services
     openai_api_key: Optional[str] = None

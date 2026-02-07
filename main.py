@@ -60,7 +60,7 @@ def create_app() -> FastAPI:
         settings.frontend_url,
         "http://localhost:3000",
         "http://localhost:3003",
-        "https://prince-divine-furnished-methodology.trycloudflare.com",  # Cloudflare Tunnel
+        "https://gate-penny-arrivals-andreas.trycloudflare.com",  # Cloudflare Tunnel
     ] if settings.debug else [settings.frontend_url]
 
     app.add_middleware(

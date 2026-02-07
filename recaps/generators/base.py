@@ -223,21 +223,17 @@ class BaseGenerator(ABC):
     ) -> Optional[str]:
         """Call LLM handler with the prompt.
 
-        This method provides a hook for subclasses to customize LLM calling.
-        The default implementation returns None, requiring subclasses to
-        implement their specific LLM integration.
-
         Args:
             llm_handler: The LLM handler instance
             prompt: The complete prompt to send
             persona: The persona being used
 
         Returns:
-            Generated text from the LLM, or None if not implemented
+            Generated text from the LLM, or None on failure
         """
-        # Subclasses can override with specific implementation
-        # The base implementation returns None to trigger fallback
-        return None
+        if llm_handler is None:
+            return None
+        return await llm_handler.call_prompt(prompt, provider="openai")
 
     async def _call_llm_for_plan(
         self,
@@ -250,18 +246,16 @@ class BaseGenerator(ABC):
         from the LLM. The prompt should instruct the LLM to return only
         valid JSON with no additional text.
 
-        Subclasses can override for specific LLM integration.
-
         Args:
             llm_handler: The LLM handler instance
             prompt: The planner prompt requesting JSON output
 
         Returns:
-            JSON string from LLM, or None if not implemented/failed
+            JSON string from LLM, or None on failure
         """
-        # Default implementation returns None
-        # When LLM is integrated, this will call the LLM API
-        return None
+        if llm_handler is None:
+            return None
+        return await llm_handler.call_prompt(prompt, provider="openai")
 
     def _use_two_phase_llm(self) -> bool:
         """Whether this generator uses two-phase LLM.
