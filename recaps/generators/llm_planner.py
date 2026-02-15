@@ -77,7 +77,8 @@ class LLMPlanner:
         persona_name: str,
         persona_instructions: str,
         valid_team_names: list[str],
-        valid_matchup_ids: Optional[list[int]] = None
+        valid_matchup_ids: Optional[list[int]] = None,
+        sport: str = "football",
     ) -> str:
         """Build prompt for the planner phase.
 
@@ -86,7 +87,7 @@ class LLMPlanner:
         team_list = ", ".join(f'"{t}"' for t in valid_team_names)
         matchup_list = ", ".join(str(m) for m in (valid_matchup_ids or []))
 
-        return f"""You are a fantasy football recap planner. Return ONLY valid JSON, no other text.
+        return f"""You are a fantasy {sport} recap planner. Return ONLY valid JSON, no other text.
 
 TASK: Create a structured plan for a {recap_type} recap.
 
@@ -116,7 +117,7 @@ Return a JSON object with this EXACT structure:
         {{
           "team_name": "EXACT team name from valid list",
           "tone": "praise|roast|neutral|sympathy",
-          "blurb": "1-2 sentences max",
+          "blurb": "1-3 sentences. MUST include at least one player name with their points scored (e.g., 'Shai dropped 35.8 pts against a projected 22.0'). For top/bottom teams, include 2-3 players.",
           "emphasis": true
         }}
       ],
@@ -130,8 +131,10 @@ RULES:
 1. team_name MUST be an exact match from the valid team names list
 2. matchup_id MUST be from the valid matchup IDs list (if used)
 3. All statistics in blurbs MUST come from the facts
-4. Keep blurbs SHORT: 1-2 sentences maximum
+4. Keep blurbs concise: 1-3 sentences maximum
 5. Return ONLY the JSON object, no explanation or markdown
+6. Every team_blurb MUST reference at least one player with their actual points scored
+7. For top-ranked and bottom-ranked teams, reference 2-3 players with stats
 
 Produce 3-5 sections with 2-4 team_blurbs each.
 """

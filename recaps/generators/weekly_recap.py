@@ -24,6 +24,8 @@ from recaps.generators.facts_pack import (
     WeeklyRecapFactsPack,
     MatchupResultFact,
     WeeklyStoryPrimitive,
+    PlayerFact,
+    TeamRosterHighlights,
 )
 from recaps.generators.llm_planner import LLMPlanner, RecapPlan, create_planner
 from recaps.prompts.personas import get_persona
@@ -146,10 +148,13 @@ class WeeklyRecapGenerator(BaseGenerator):
             matchups_tuple, summary, avg_score
         )
 
+        roster_highlights, mvp_of_week, bust_of_week = self._extract_roster_highlights(summary)
+
         return WeeklyRecapFactsPack(
             league_name=summary.league_name,
             week=summary.week,
             season=summary.season,
+            sport=summary.sport,
             matchups=matchups_tuple,
             total_points=total_pts,
             average_score=avg_score,
@@ -164,6 +169,9 @@ class WeeklyRecapGenerator(BaseGenerator):
             team_of_week_score=team_of_week_score,
             dud_of_week=dud_of_week,
             dud_of_week_score=dud_of_week_score,
+            roster_highlights=roster_highlights,
+            mvp_of_week=mvp_of_week,
+            bust_of_week=bust_of_week,
             upset_count=upset_count,
             upsets=upsets,
             all_team_names=tuple(sorted(all_team_names)),
@@ -301,7 +309,137 @@ class WeeklyRecapGenerator(BaseGenerator):
                 key_stat=f"{best.combined_score:.1f} combined",
             ))
 
+        for perf in summary.performances:
+            if not perf.roster_data:
+                continue
+            try:
+                players = json.loads(perf.roster_data)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            for p in players:
+                if p.get('started') and p.get('points', 0) >= 40:
+                    primitives.append(WeeklyStoryPrimitive(
+                        story_type="player_explosion",
+                        headline=f"{p['name']} Goes Off for {perf.team_name}",
+                        team_name=perf.team_name,
+                        owner_name=perf.owner_name,
+                        description=f"{p['name']} ({p.get('position', '?')}) dropped {p['points']:.1f} points.",
+                        key_stat=f"{p['points']:.1f} pts",
+                    ))
+
+        for perf in summary.performances:
+            if not perf.roster_data:
+                continue
+            try:
+                players = json.loads(perf.roster_data)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            for p in players:
+                if (p.get('started') and p.get('projected') is not None
+                        and p['projected'] >= 15 and p.get('points', 0) < 5):
+                    primitives.append(WeeklyStoryPrimitive(
+                        story_type="player_dud",
+                        headline=f"{p['name']} No-Shows for {perf.team_name}",
+                        team_name=perf.team_name,
+                        owner_name=perf.owner_name,
+                        description=f"{p['name']} ({p.get('position', '?')}) projected {p['projected']:.1f} but scored just {p['points']:.1f}.",
+                        key_stat=f"{p['points']:.1f} pts (proj {p['projected']:.1f})",
+                    ))
+
         return tuple(primitives)
+
+    def _extract_roster_highlights(
+        self,
+        summary: WeeklySummary,
+    ) -> tuple[
+        Optional[tuple[TeamRosterHighlights, ...]],
+        Optional[PlayerFact],
+        Optional[tuple[str, PlayerFact]],
+    ]:
+        highlights: list[TeamRosterHighlights] = []
+        league_mvp: Optional[PlayerFact] = None
+        league_mvp_team: Optional[str] = None
+        league_bust: Optional[tuple[str, PlayerFact]] = None
+
+        for perf in summary.performances:
+            if not perf.roster_data:
+                continue
+
+            try:
+                players = json.loads(perf.roster_data)
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+            if not players:
+                continue
+
+            starters = [p for p in players if p.get('started')]
+            bench = [p for p in players if not p.get('started')]
+
+            if not starters:
+                continue
+
+            top_starter = max(starters, key=lambda p: p.get('points', 0))
+            top_scorer_fact = PlayerFact(
+                name=top_starter['name'],
+                position=top_starter.get('position', ''),
+                points=top_starter.get('points', 0),
+                projected=top_starter.get('projected'),
+                started=True,
+            )
+
+            biggest_bust_fact = None
+            if any(p.get('projected') is not None for p in starters):
+                busts = [
+                    p for p in starters
+                    if p.get('projected') is not None
+                    and p['points'] - p['projected'] <= -5
+                ]
+                if busts:
+                    worst = min(busts, key=lambda p: p['points'] - p['projected'])
+                    biggest_bust_fact = PlayerFact(
+                        name=worst['name'],
+                        position=worst.get('position', ''),
+                        points=worst.get('points', 0),
+                        projected=worst.get('projected'),
+                        started=True,
+                    )
+
+            best_bench_fact = None
+            bench_total = sum(p.get('points', 0) for p in bench)
+            if bench:
+                top_bench = max(bench, key=lambda p: p.get('points', 0))
+                if top_bench.get('points', 0) > 0:
+                    best_bench_fact = PlayerFact(
+                        name=top_bench['name'],
+                        position=top_bench.get('position', ''),
+                        points=top_bench.get('points', 0),
+                        projected=top_bench.get('projected'),
+                        started=False,
+                    )
+
+            highlights.append(TeamRosterHighlights(
+                team_name=perf.team_name,
+                owner_name=perf.owner_name,
+                top_scorer=top_scorer_fact,
+                biggest_bust=biggest_bust_fact,
+                best_bench=best_bench_fact,
+                bench_points_total=round(bench_total, 2),
+            ))
+
+            if league_mvp is None or top_starter.get('points', 0) > league_mvp.points:
+                league_mvp = top_scorer_fact
+                league_mvp_team = perf.team_name
+
+            if biggest_bust_fact:
+                if league_bust is None or (biggest_bust_fact.projected and biggest_bust_fact.points - biggest_bust_fact.projected < (league_bust[1].points - (league_bust[1].projected or 0))):
+                    league_bust = (perf.team_name, biggest_bust_fact)
+
+        return (
+            tuple(highlights) if highlights else None,
+            league_mvp,
+            league_bust,
+        )
 
     def render_deterministic(self, facts: WeeklyRecapFactsPack) -> tuple[str, str]:
         """Render weekly recap deterministically using templates.
@@ -392,8 +530,61 @@ class WeeklyRecapGenerator(BaseGenerator):
         lines.append(f"Low Score: {facts.low_score:.1f}")
         lines.append(f"Total Points: {facts.total_points:.1f}")
 
+        if facts.mvp_of_week or facts.bust_of_week:
+            lines.append("")
+            lines.append("PLAYER HIGHLIGHTS")
+            lines.append("-" * 46)
+            if facts.mvp_of_week:
+                mvp = facts.mvp_of_week
+                lines.append(f"MVP: {mvp.name} ({mvp.position}) - {mvp.points:.1f} pts")
+            if facts.bust_of_week:
+                team, bust = facts.bust_of_week
+                proj = f" (proj {bust.projected:.1f})" if bust.projected else ""
+                lines.append(f"Bust: {bust.name} ({bust.position}) - {bust.points:.1f} pts{proj}")
+
         content = "\n".join(lines)
         return title, content
+
+    def _format_player_highlights_for_prompt(self, facts: WeeklyRecapFactsPack) -> str:
+        lines: list[str] = []
+
+        if facts.mvp_of_week:
+            mvp = facts.mvp_of_week
+            proj = f" (projected: {mvp.projected:.1f})" if mvp.projected else ""
+            lines.append(f"MVP OF THE WEEK: {mvp.name} ({mvp.position}) — {mvp.points:.1f} pts{proj}")
+
+        if facts.bust_of_week:
+            team, bust = facts.bust_of_week
+            proj = f" (projected: {bust.projected:.1f})" if bust.projected else ""
+            lines.append(f"BUST OF THE WEEK: {bust.name} ({bust.position}) — {bust.points:.1f} pts for \"{team}\"{proj}")
+
+        if facts.roster_highlights:
+            lines.append("")
+            lines.append("PER-TEAM STANDOUTS:")
+            for i, rh in enumerate(facts.roster_highlights, 1):
+                star = rh.top_scorer
+                star_proj = f" (proj {star.projected:.1f})" if star.projected else ""
+                lines.append(f"{i}. \"{rh.team_name}\" (owner: {rh.owner_name})")
+                lines.append(f"   Star: {star.name} ({star.position}) — {star.points:.1f} pts{star_proj}")
+                if rh.biggest_bust:
+                    bust = rh.biggest_bust
+                    miss = f", missed by {bust.points - bust.projected:.1f}" if bust.projected else ""
+                    proj_str = f" (proj {bust.projected:.1f}{miss})" if bust.projected else ""
+                    lines.append(f"   Bust: {bust.name} ({bust.position}) — {bust.points:.1f} pts{proj_str}")
+                if rh.best_bench:
+                    bench = rh.best_bench
+                    lines.append(f"   Best Bench: {bench.name} ({bench.position}) — {bench.points:.1f} pts (left on bench!)")
+                lines.append(f"   Bench Total: {rh.bench_points_total:.1f} pts")
+
+        if not lines:
+            return ""
+
+        return (
+            "\nPLAYER HIGHLIGHTS (reference these for specific commentary):\n"
+            + "\n".join(lines)
+            + "\n\nYou MUST include at least one stat (pts scored, projected) every time you mention a player. "
+            "Never reference a player without their numbers.\n"
+        )
 
     def build_llm_prompt(self, facts: WeeklyRecapFactsPack, persona: str) -> str:
         """Build LLM prompt with facts and story primitives.
@@ -414,7 +605,6 @@ class WeeklyRecapGenerator(BaseGenerator):
         persona_obj = get_persona(persona)
         facts_json = json.dumps(asdict(facts), indent=2, default=str)
 
-        # Extract story primitives for emphasis
         stories_text = "\n".join(
             f"- [{p.story_type.upper()}] {p.headline}: {p.description} ({p.key_stat})"
             for p in facts.story_primitives
@@ -422,7 +612,9 @@ class WeeklyRecapGenerator(BaseGenerator):
 
         tone_examples = "\n".join(f'- "{ex}"' for ex in persona_obj.tone_examples)
 
-        return f"""You are a fantasy football commissioner writing an engaging Weekly Recap.
+        player_section = self._format_player_highlights_for_prompt(facts)
+
+        return f"""You are a fantasy {facts.sport} commissioner writing an engaging Weekly Recap.
 
 CRITICAL RULES:
 1. You may ONLY use facts from the JSON below
@@ -430,6 +622,9 @@ CRITICAL RULES:
 3. DO NOT invent new narratives, statistics, or matchup results
 4. Every score, margin, and team name MUST come from the facts
 5. The story primitives are pre-computed - use them, don't make up new ones
+6. When mentioning ANY player, ALWAYS include their points scored (and projected points if available)
+7. For interesting matchups (upsets, blowouts, nail-biters), mention 2-3 players with full stats
+8. For average matchups, mention at least 1 player with stats
 
 PERSONA: {persona_obj.name}
 {persona_obj.instructions}
@@ -439,18 +634,24 @@ TONE EXAMPLES:
 
 PRE-COMPUTED STORY PRIMITIVES (choose from these for your narrative):
 {stories_text}
-
+{player_section}
 FULL FACTS PACK:
 ```json
 {facts_json}
 ```
 
+EXAMPLE OF GOOD BLURB (for style reference only — do not copy):
+"The upset of the week goes to Fantasy Fiends, who stormed back thanks to CJ McCollum's 42.3 pts (projected just 28.1) and a clutch 18.7 from Jaylen Brown. Meanwhile, the Couch Potatoes got torched — their 'star' D. Henry managed just 6.1 pts on an 18.0 projection."
+
 Write an engaging weekly recap that:
 - Opens with a hook about the week's action
 - Highlights 2-3 key storylines from the STORY PRIMITIVES
 - Mentions the team of the week and any notable performances
+- MUST cite specific stats (points, projected) when mentioning any player — never mention a player without numbers
+- For key matchups (upsets, blowouts, nail-biters): cite 2-3 players with full stat lines
+- For other matchups: cite at least 1 player with stats
 - Uses the persona style throughout
-- Is 250-400 words
+- Is 300-600 words
 - Is formatted for a group chat message (not markdown)
 
 DO NOT use asterisks for bold. Use emojis sparingly for emphasis.
@@ -488,6 +689,7 @@ Remember: Pick stories from the primitives, don't invent new ones!
             persona_instructions=persona_obj.instructions,
             valid_team_names=list(facts.all_team_names),
             valid_matchup_ids=matchup_ids,
+            sport=facts.sport,
         )
 
     def render_from_plan(

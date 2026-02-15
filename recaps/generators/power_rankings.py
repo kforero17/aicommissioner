@@ -21,6 +21,8 @@ from recaps.generators.facts_pack import (
     PowerRankingFact,
     MatchupFact,
     StoryPick,
+    PlayerFact,
+    TeamRosterHighlights,
 )
 from recaps.generators.llm_planner import LLMPlanner, RecapPlan, create_planner
 from recaps.prompts.personas import get_persona
@@ -251,10 +253,15 @@ class PowerRankingsGenerator(BaseGenerator):
         # Collect all team names for validation
         all_team_names = tuple(pr.team_name for pr in rankings)
 
+        roster_highlights, mvp_of_week, bust_of_week, bench_blunder, all_player_names = (
+            self._extract_roster_highlights(summary.performances)
+        )
+
         return PowerRankingsFactsPack(
             league_name=summary.league_name,
             week=summary.week,
             season=summary.season,
+            sport=summary.sport,
             rankings=rankings,
             biggest_climber=biggest_climber,
             biggest_faller=biggest_faller,
@@ -269,6 +276,11 @@ class PowerRankingsGenerator(BaseGenerator):
             top_riser=top_riser,
             biggest_fall=biggest_fall_story,
             fraud_watch=fraud_watch,
+            roster_highlights=roster_highlights if roster_highlights else None,
+            mvp_of_week=mvp_of_week,
+            bust_of_week=bust_of_week,
+            bench_blunder=bench_blunder,
+            all_player_names=all_player_names,
             all_team_names=all_team_names,
             all_numbers=tuple(all_numbers),
         )
@@ -432,6 +444,133 @@ class PowerRankingsGenerator(BaseGenerator):
             stat=f"{round(perf.points_scored, 1)} pts (L)",
         )
 
+    def _extract_roster_highlights(
+        self,
+        performances: list[WeeklyPerformance],
+    ) -> tuple[
+        tuple[TeamRosterHighlights, ...],
+        Optional[PlayerFact],
+        Optional[tuple[str, PlayerFact]],
+        Optional[tuple[str, PlayerFact, PlayerFact]],
+        tuple[str, ...],
+    ]:
+        """Extract player highlights from roster data.
+
+        Returns (roster_highlights, mvp_of_week, bust_of_week, bench_blunder, all_player_names).
+        """
+        highlights: list[TeamRosterHighlights] = []
+        all_player_names: list[str] = []
+        league_mvp: Optional[tuple[str, str, PlayerFact]] = None
+        league_bust: Optional[tuple[str, PlayerFact]] = None
+        league_bench_blunder: Optional[tuple[str, PlayerFact, PlayerFact]] = None
+
+        for perf in performances:
+            if not perf.roster_data:
+                continue
+
+            try:
+                players = json.loads(perf.roster_data)
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+            if not players:
+                continue
+
+            starters = [p for p in players if p.get('started')]
+            bench = [p for p in players if not p.get('started')]
+
+            all_player_names.extend(p['name'] for p in players if p.get('name'))
+
+            if not starters:
+                continue
+
+            top_starter = max(starters, key=lambda p: p.get('points', 0))
+            top_scorer_fact = PlayerFact(
+                name=top_starter['name'],
+                position=top_starter.get('position', ''),
+                points=top_starter.get('points', 0),
+                projected=top_starter.get('projected'),
+                started=True,
+            )
+
+            biggest_bust_fact = None
+            if any(p.get('projected') is not None for p in starters):
+                busts = [
+                    p for p in starters
+                    if p.get('projected') is not None
+                    and p['points'] - p['projected'] <= -5
+                ]
+                if busts:
+                    worst = min(busts, key=lambda p: p['points'] - p['projected'])
+                    biggest_bust_fact = PlayerFact(
+                        name=worst['name'],
+                        position=worst.get('position', ''),
+                        points=worst.get('points', 0),
+                        projected=worst.get('projected'),
+                        started=True,
+                    )
+
+            best_bench_fact = None
+            bench_total = sum(p.get('points', 0) for p in bench)
+            if bench:
+                top_bench = max(bench, key=lambda p: p.get('points', 0))
+                if top_bench.get('points', 0) > 0:
+                    best_bench_fact = PlayerFact(
+                        name=top_bench['name'],
+                        position=top_bench.get('position', ''),
+                        points=top_bench.get('points', 0),
+                        projected=top_bench.get('projected'),
+                        started=False,
+                    )
+
+            highlights.append(TeamRosterHighlights(
+                team_name=perf.team_name,
+                owner_name=perf.owner_name,
+                top_scorer=top_scorer_fact,
+                biggest_bust=biggest_bust_fact,
+                best_bench=best_bench_fact,
+                bench_points_total=round(bench_total, 2),
+            ))
+
+            if league_mvp is None or top_starter.get('points', 0) > league_mvp[2].points:
+                league_mvp = (perf.team_name, perf.owner_name, top_scorer_fact)
+
+            if biggest_bust_fact:
+                if league_bust is None or (
+                    biggest_bust_fact.projected
+                    and biggest_bust_fact.points - biggest_bust_fact.projected
+                    < (league_bust[1].points - (league_bust[1].projected or 0))
+                ):
+                    league_bust = (perf.team_name, biggest_bust_fact)
+
+            if best_bench_fact and starters:
+                worst_starter = min(starters, key=lambda p: p.get('points', 0))
+                if best_bench_fact.points > worst_starter.get('points', 0) + 5:
+                    weak_starter_fact = PlayerFact(
+                        name=worst_starter['name'],
+                        position=worst_starter.get('position', ''),
+                        points=worst_starter.get('points', 0),
+                        projected=worst_starter.get('projected'),
+                        started=True,
+                    )
+                    if league_bench_blunder is None or (
+                        best_bench_fact.points - worst_starter.get('points', 0)
+                        > (league_bench_blunder[1].points - league_bench_blunder[2].points)
+                    ):
+                        league_bench_blunder = (perf.team_name, best_bench_fact, weak_starter_fact)
+
+        mvp = league_mvp[2] if league_mvp else None
+        bust = league_bust if league_bust else None
+        blunder = league_bench_blunder if league_bench_blunder else None
+
+        return (
+            tuple(highlights),
+            mvp,
+            bust,
+            blunder,
+            tuple(all_player_names),
+        )
+
     def render_deterministic(self, facts: PowerRankingsFactsPack) -> tuple[str, str]:
         """Render power rankings deterministically using templates.
 
@@ -537,8 +676,80 @@ class PowerRankingsGenerator(BaseGenerator):
                 f"Low Score: {facts.lowest_scorer_team} ({facts.lowest_scorer_points:.1f})"
             )
 
+        if facts.roster_highlights:
+            lines.append("")
+            lines.append("PLAYER HIGHLIGHTS")
+            lines.append("-" * 46)
+
+            if facts.mvp_of_week:
+                mvp = facts.mvp_of_week
+                lines.append(f"MVP: {mvp.name} ({mvp.position}) - {mvp.points:.1f} pts")
+
+            if facts.bust_of_week:
+                team, bust = facts.bust_of_week
+                proj_str = f" (proj {bust.projected:.1f})" if bust.projected else ""
+                lines.append(f"Bust: {bust.name} ({bust.position}) - {bust.points:.1f} pts{proj_str}")
+
+            if facts.bench_blunder:
+                team, benched, starter = facts.bench_blunder
+                lines.append(
+                    f"Bench Blunder: \"{team}\" benched {benched.name} ({benched.points:.1f}) "
+                    f"over {starter.name} ({starter.points:.1f})"
+                )
+
         content = "\n".join(lines)
         return title, content
+
+    def _format_player_highlights(self, facts: PowerRankingsFactsPack) -> str:
+        lines: list[str] = []
+
+        if facts.mvp_of_week:
+            mvp = facts.mvp_of_week
+            proj = f" (projected: {mvp.projected})" if mvp.projected else ""
+            lines.append(f"MVP OF THE WEEK: {mvp.name} ({mvp.position}) - {mvp.points} pts{proj}")
+
+        if facts.bust_of_week:
+            team, bust = facts.bust_of_week
+            proj = f" (projected: {bust.projected})" if bust.projected else ""
+            lines.append(
+                f"BUST OF THE WEEK: {bust.name} ({bust.position}) - "
+                f"{bust.points} pts for \"{team}\"{proj}"
+            )
+
+        if facts.bench_blunder:
+            team, benched, starter = facts.bench_blunder
+            lines.append(
+                f"BENCH BLUNDER: \"{team}\" left {benched.name} ({benched.points} pts) "
+                f"on bench, started {starter.name} ({starter.points} pts)"
+            )
+
+        if facts.roster_highlights:
+            lines.append("")
+            lines.append("PER-TEAM STANDOUTS:")
+            for i, rh in enumerate(facts.roster_highlights, 1):
+                star = rh.top_scorer
+                star_proj = f" (proj {star.projected:.1f})" if star.projected else ""
+                lines.append(f"{i}. \"{rh.team_name}\" (owner: {rh.owner_name})")
+                lines.append(f"   Star: {star.name} ({star.position}) — {star.points:.1f} pts{star_proj}")
+                if rh.biggest_bust:
+                    bust = rh.biggest_bust
+                    miss = f", missed by {bust.points - bust.projected:.1f}" if bust.projected else ""
+                    proj_str = f" (proj {bust.projected:.1f}{miss})" if bust.projected else ""
+                    lines.append(f"   Bust: {bust.name} ({bust.position}) — {bust.points:.1f} pts{proj_str}")
+                if rh.best_bench:
+                    bench = rh.best_bench
+                    lines.append(f"   Best Bench: {bench.name} ({bench.position}) — {bench.points:.1f} pts (left on bench!)")
+                lines.append(f"   Bench Total: {rh.bench_points_total:.1f} pts")
+
+        if not lines:
+            return ""
+
+        return (
+            "\nPLAYER HIGHLIGHTS (reference these for specific commentary):\n"
+            + "\n".join(lines)
+            + "\n\nYou MUST include at least one stat (pts scored, projected) every time you mention a player. "
+            "Never reference a player without their numbers.\n"
+        )
 
     def build_llm_prompt(self, facts: PowerRankingsFactsPack, persona: str) -> str:
         """Build LLM prompt with facts as JSON.
@@ -556,10 +767,11 @@ class PowerRankingsGenerator(BaseGenerator):
         """
         persona_obj = get_persona(persona)
         facts_json = json.dumps(asdict(facts), indent=2, default=str)
+        player_highlights = self._format_player_highlights(facts)
 
         tone_examples = "\n".join(f'- "{ex}"' for ex in persona_obj.tone_examples)
 
-        return f"""You are a fantasy football commissioner writing a Power Rankings recap.
+        return f"""You are a fantasy {facts.sport} commissioner writing a Power Rankings recap.
 
 CRITICAL RULES:
 1. You may ONLY reference facts from the JSON below
@@ -567,6 +779,9 @@ CRITICAL RULES:
 3. Every team name, record, and score MUST come from the facts pack
 4. If information is not in the facts, do not mention it
 5. Never make up matchup results or player performances
+6. When mentioning ANY player, ALWAYS include their points scored (and projected points if available)
+7. For interesting teams (upsets, blowouts, big movers), mention 2-3 players with full stats
+8. For average teams, mention at least 1 player with stats
 
 PERSONA: {persona_obj.name}
 {persona_obj.instructions}
@@ -578,13 +793,19 @@ FACTS PACK:
 ```json
 {facts_json}
 ```
+{player_highlights}
+EXAMPLE OF GOOD BLURB (for style reference only — do not copy):
+"McCollum Me by Eric Prydz stays locked at #1, and it's no mystery why — CJ McCollum went nuclear with 42.3 pts (projected just 28.1), while Shai Gilgeous-Alexander added 35.8 to seal the deal. This squad is scary."
 
 Write a power rankings recap that:
 - Opens with an engaging title/header
 - Highlights the top teams and notable movements
 - Mentions the week's biggest winner/loser if interesting
+- MUST cite specific stats (points, projected) when mentioning any player — never mention a player without numbers
+- For top/bottom ranked teams and big movers: cite 2-3 players with full stat lines
+- For middle-of-pack teams: cite at least 1 player with stats
 - Uses the persona style throughout
-- Is 200-400 words
+- Is 300-600 words
 - Is formatted for a group chat message (not markdown)
 
 DO NOT use asterisks for bold. Use emojis sparingly for emphasis.
@@ -618,6 +839,7 @@ DO NOT use asterisks for bold. Use emojis sparingly for emphasis.
             persona_instructions=persona_obj.instructions,
             valid_team_names=list(facts.all_team_names),
             valid_matchup_ids=None,
+            sport=facts.sport,
         )
 
     def render_from_plan(
@@ -756,7 +978,19 @@ DO NOT use asterisks for bold. Use emojis sparingly for emphasis.
             if not any(abs(num - fact_num) < 0.1 for fact_num in facts.all_numbers):
                 warnings.append(f"Number {num} not found in facts")
 
-        # If too many warnings, consider invalid
+        player_numbers = self._collect_player_numbers(facts)
+        all_valid_numbers = set(facts.all_numbers) | player_numbers
+
+        revalidated_warnings: list[str] = []
+        for w in warnings:
+            num_match = re.search(r'Number ([\d.]+) not found', w)
+            if num_match:
+                num = float(num_match.group(1))
+                if any(abs(num - valid) < 0.1 for valid in all_valid_numbers):
+                    continue
+            revalidated_warnings.append(w)
+        warnings = revalidated_warnings
+
         is_valid = len(warnings) < 3
 
         if warnings:
@@ -764,12 +998,44 @@ DO NOT use asterisks for bold. Use emojis sparingly for emphasis.
                 "LLM output validation warnings",
                 extra={
                     "warning_count": len(warnings),
-                    "warnings": warnings[:5],  # Limit logged warnings
+                    "warnings": warnings[:5],
                     "is_valid": is_valid,
                 }
             )
 
         return is_valid, warnings
+
+    def _collect_player_numbers(self, facts: PowerRankingsFactsPack) -> set[float]:
+        numbers: set[float] = set()
+
+        if facts.mvp_of_week:
+            numbers.add(facts.mvp_of_week.points)
+            if facts.mvp_of_week.projected:
+                numbers.add(facts.mvp_of_week.projected)
+
+        if facts.bust_of_week:
+            _, bust = facts.bust_of_week
+            numbers.add(bust.points)
+            if bust.projected:
+                numbers.add(bust.projected)
+
+        if facts.bench_blunder:
+            _, benched, starter = facts.bench_blunder
+            numbers.add(benched.points)
+            numbers.add(starter.points)
+
+        if facts.roster_highlights:
+            for rh in facts.roster_highlights:
+                numbers.add(rh.top_scorer.points)
+                numbers.add(rh.bench_points_total)
+                if rh.biggest_bust:
+                    numbers.add(rh.biggest_bust.points)
+                    if rh.biggest_bust.projected:
+                        numbers.add(rh.biggest_bust.projected)
+                if rh.best_bench:
+                    numbers.add(rh.best_bench.points)
+
+        return numbers
 
     async def generate(
         self,
