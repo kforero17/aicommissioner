@@ -1,10 +1,14 @@
 """Admin routes for managing leagues and running recaps."""
+import asyncio
+import logging
 from typing import Optional, List, Any, Dict, Literal
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, status
+
+logger = logging.getLogger(__name__)
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
@@ -47,6 +51,7 @@ class LeagueCreate(BaseModel):
     enable_waiver_recaps: bool = True
     enable_llm_rendering: bool = False
     ai_persona_style: Optional[str] = None
+    commissioner_notes: Optional[str] = None
 
 
 class LeagueUpdate(BaseModel):
@@ -57,6 +62,7 @@ class LeagueUpdate(BaseModel):
     enable_waiver_recaps: Optional[bool] = None
     enable_llm_rendering: Optional[bool] = None
     ai_persona_style: Optional[str] = None
+    commissioner_notes: Optional[str] = None
     power_rankings_day: Optional[str] = None
     power_rankings_time: Optional[str] = None
     waiver_recap_day: Optional[str] = None
@@ -80,6 +86,7 @@ class LeagueResponse(BaseModel):
     enable_waiver_recaps: bool
     enable_llm_rendering: bool
     ai_persona_style: Optional[str]
+    commissioner_notes: Optional[str] = None
     is_active: bool
     last_sync_at: Optional[str]
     # Scheduling fields
@@ -185,6 +192,7 @@ async def create_league(
         enable_waiver_recaps=league_data.enable_waiver_recaps,
         enable_llm_rendering=league_data.enable_llm_rendering,
         ai_persona_style=league_data.ai_persona_style,
+        commissioner_notes=league_data.commissioner_notes,
     )
 
     db.add(new_league)
@@ -215,6 +223,7 @@ async def create_league(
         enable_waiver_recaps=new_league.enable_waiver_recaps,
         enable_llm_rendering=new_league.enable_llm_rendering,
         ai_persona_style=new_league.ai_persona_style,
+        commissioner_notes=new_league.commissioner_notes,
         is_active=new_league.is_active,
         last_sync_at=new_league.last_sync_at.isoformat() if new_league.last_sync_at else None,
         power_rankings_day=new_league.power_rankings_day,
@@ -226,11 +235,13 @@ async def create_league(
     )
 
 
-def get_current_nfl_season() -> int:
-    """Get the current NFL season year based on today's date."""
+def get_current_fantasy_season() -> int:
+    """Get the current fantasy season year.
+
+    Both NFL and NBA seasons start in the fall, so the same
+    September cutoff applies to all supported sports.
+    """
     today = datetime.now()
-    # NFL season starts in September, so if we're before September,
-    # the current season is the previous year
     if today.month < 9:
         return today.year - 1
     return today.year
@@ -250,7 +261,7 @@ async def get_user_leagues(
     query = select(League).filter(League.owner_id == current_user.id)
 
     if not all_seasons:
-        current_season = get_current_nfl_season()
+        current_season = get_current_fantasy_season()
         query = query.filter(League.season >= current_season)
 
     query = query.order_by(League.season.desc(), League.name)
@@ -272,6 +283,7 @@ async def get_user_leagues(
             enable_waiver_recaps=league.enable_waiver_recaps,
             enable_llm_rendering=league.enable_llm_rendering,
             ai_persona_style=league.ai_persona_style,
+            commissioner_notes=league.commissioner_notes,
             is_active=league.is_active,
             last_sync_at=league.last_sync_at.isoformat() if league.last_sync_at else None,
             power_rankings_day=league.power_rankings_day,
@@ -293,6 +305,13 @@ async def update_league(
     db: AsyncSession = Depends(get_db)
 ):
     """Update league settings."""
+    logger.info(
+        "update_league called: league_id=%s, user_id=%s, user_email=%s",
+        league_id,
+        current_user.id,
+        current_user.email,
+    )
+
     result = await db.execute(
         select(League).filter(
             League.id == league_id,
@@ -300,8 +319,22 @@ async def update_league(
         )
     )
     league = result.scalar_one_or_none()
-    
+
     if not league:
+        league_exists = await db.execute(
+            select(League).filter(League.id == league_id)
+        )
+        existing_league = league_exists.scalar_one_or_none()
+        if existing_league:
+            logger.warning(
+                "League %s exists but user %s (id=%s) is not owner. Owner is user_id=%s",
+                league_id,
+                current_user.email,
+                current_user.id,
+                existing_league.owner_id,
+            )
+        else:
+            logger.warning("League %s does not exist in database", league_id)
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="League not found"
@@ -328,6 +361,7 @@ async def update_league(
         enable_waiver_recaps=league.enable_waiver_recaps,
         enable_llm_rendering=league.enable_llm_rendering,
         ai_persona_style=league.ai_persona_style,
+        commissioner_notes=league.commissioner_notes,
         is_active=league.is_active,
         last_sync_at=league.last_sync_at.isoformat() if league.last_sync_at else None,
         power_rankings_day=league.power_rankings_day,
@@ -408,13 +442,25 @@ async def sync_league_data(
             detail="League not found"
         )
 
-    # Dispatch Celery task to sync the league
-    task = sync_specific_league.apply_async(
-        args=[league_id, league.provider.value, league.provider_league_id]
-    )
+    # Dispatch Celery task, fall back to async if broker unavailable
+    task_id = None
+    try:
+        task = sync_specific_league.apply_async(
+            args=[league_id, league.provider.value, league.provider_league_id]
+        )
+        task_id = task.id
+    except Exception as e:
+        logger.warning("Celery unavailable for sync, running in background: %s", e)
+        from ingestors.yahoo_ingestor import ingest_yahoo_leagues
+        from ingestors.sleeper_ingestor import ingest_sleeper_league
+
+        if league.provider == ProviderType.YAHOO:
+            asyncio.create_task(ingest_yahoo_leagues(league.owner_id))
+        else:
+            asyncio.create_task(ingest_sleeper_league(league.provider_league_id, league.owner_id))
 
     return {
-        "task_id": task.id,
+        "task_id": task_id,
         "message": "League sync started",
         "status": "pending"
     }
@@ -448,11 +494,18 @@ async def get_task_status(
         Success: {"task_id": "abc-123", "status": "SUCCESS", "result": {...}}
         Failure: {"task_id": "abc-123", "status": "FAILURE", "error": "..."}
     """
-    task_result = AsyncResult(task_id)
+    if task_id in ("null", "None", ""):
+        return {"task_id": task_id, "status": "UNKNOWN", "error": "No task ID available"}
+
+    try:
+        task_result = AsyncResult(task_id)
+        task_status = task_result.status
+    except Exception:
+        return {"task_id": task_id, "status": "UNKNOWN", "error": "Unable to query task status"}
 
     response: Dict[str, Any] = {
         "task_id": task_id,
-        "status": task_result.status,
+        "status": task_status,
     }
 
     if task_result.successful():
@@ -518,16 +571,24 @@ async def run_manual_power_rankings(
             detail="Power rankings are disabled for this league"
         )
 
-    # Dispatch Celery task to generate power rankings
-    task = generate_manual_recap.apply_async(
-        args=[league.id, "power_rankings", request.week, request.preview_only, request.test_mode]
-    )
-
-    return {
-        "task_id": task.id,
-        "message": "Power rankings recap started",
-        "status": "pending"
-    }
+    # Dispatch Celery task, fall back to direct execution if broker unavailable
+    try:
+        task = generate_manual_recap.apply_async(
+            args=[league.id, "power_rankings", request.week, request.preview_only, request.test_mode]
+        )
+        return {"task_id": task.id, "message": "Power rankings recap started", "status": "pending"}
+    except Exception as e:
+        logger.warning("Celery unavailable for power rankings, running directly: %s", e)
+        from schedulers.tasks import _generate_manual_recap
+        result = await _generate_manual_recap(
+            league.id, "power_rankings", request.week, request.preview_only, request.test_mode
+        )
+        return {
+            "task_id": None,
+            "message": "Power rankings recap completed",
+            "status": "SUCCESS",
+            "result": result,
+        }
 
 
 @router.post("/recaps/waiver-recap")
@@ -577,16 +638,24 @@ async def run_manual_waiver_recap(
             detail="Waiver recaps are disabled for this league"
         )
 
-    # Dispatch Celery task to generate waiver recap
-    task = generate_manual_recap.apply_async(
-        args=[league.id, "waiver_recap", request.week, request.preview_only, request.test_mode]
-    )
-
-    return {
-        "task_id": task.id,
-        "message": "Waiver recap started",
-        "status": "pending"
-    }
+    # Dispatch Celery task, fall back to direct execution if broker unavailable
+    try:
+        task = generate_manual_recap.apply_async(
+            args=[league.id, "waiver_recap", request.week, request.preview_only, request.test_mode]
+        )
+        return {"task_id": task.id, "message": "Waiver recap started", "status": "pending"}
+    except Exception as e:
+        logger.warning("Celery unavailable for waiver recap, running directly: %s", e)
+        from schedulers.tasks import _generate_manual_recap
+        result = await _generate_manual_recap(
+            league.id, "waiver_recap", request.week, request.preview_only, request.test_mode
+        )
+        return {
+            "task_id": None,
+            "message": "Waiver recap completed",
+            "status": "SUCCESS",
+            "result": result,
+        }
 
 
 class PublishRequest(BaseModel):
@@ -895,6 +964,13 @@ async def get_league_status(
     Raises:
         HTTPException: If league not found or user doesn't own the league
     """
+    logger.info(
+        "get_league_status called: league_id=%s, user_id=%s, user_email=%s",
+        league_id,
+        current_user.id,
+        current_user.email,
+    )
+
     result = await db.execute(
         select(League).filter(
             League.id == league_id,
@@ -904,6 +980,20 @@ async def get_league_status(
     league = result.scalar_one_or_none()
 
     if not league:
+        league_exists = await db.execute(
+            select(League).filter(League.id == league_id)
+        )
+        existing_league = league_exists.scalar_one_or_none()
+        if existing_league:
+            logger.warning(
+                "Status check: League %s exists but user %s (id=%s) is not owner. Owner is user_id=%s",
+                league_id,
+                current_user.email,
+                current_user.id,
+                existing_league.owner_id,
+            )
+        else:
+            logger.warning("Status check: League %s does not exist in database", league_id)
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="League not found"

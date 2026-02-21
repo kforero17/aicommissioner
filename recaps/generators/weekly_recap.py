@@ -602,15 +602,12 @@ class WeeklyRecapGenerator(BaseGenerator):
         Returns:
             Complete prompt string for the LLM
         """
-        persona_obj = get_persona(persona)
         facts_json = json.dumps(asdict(facts), indent=2, default=str)
 
         stories_text = "\n".join(
             f"- [{p.story_type.upper()}] {p.headline}: {p.description} ({p.key_stat})"
             for p in facts.story_primitives
         )
-
-        tone_examples = "\n".join(f'- "{ex}"' for ex in persona_obj.tone_examples)
 
         player_section = self._format_player_highlights_for_prompt(facts)
 
@@ -625,12 +622,6 @@ CRITICAL RULES:
 6. When mentioning ANY player, ALWAYS include their points scored (and projected points if available)
 7. For interesting matchups (upsets, blowouts, nail-biters), mention 2-3 players with full stats
 8. For average matchups, mention at least 1 player with stats
-
-PERSONA: {persona_obj.name}
-{persona_obj.instructions}
-
-TONE EXAMPLES:
-{tone_examples}
 
 PRE-COMPUTED STORY PRIMITIVES (choose from these for your narrative):
 {stories_text}
@@ -873,7 +864,8 @@ Remember: Pick stories from the primitives, don't invent new ones!
         summary: WeeklySummary,
         persona: Optional[str] = None,
         use_llm: bool = True,
-        llm_handler: Optional[Any] = None
+        llm_handler: Optional[Any] = None,
+        league_context: Optional[dict] = None,
     ) -> GeneratorResult:
         """Generate weekly recap with two-phase LLM.
 
@@ -895,6 +887,7 @@ Remember: Pick stories from the primitives, don't invent new ones!
             persona: Writing persona for LLM generation
             use_llm: Whether to attempt LLM generation
             llm_handler: Handler for LLM API calls
+            league_context: Optional league metadata for system prompt
 
         Returns:
             GeneratorResult with the generated recap and metadata
@@ -918,12 +911,21 @@ Remember: Pick stories from the primitives, don't invent new ones!
 
         det_title, det_content = self.render_deterministic(facts)
 
+        # Build system prompt if persona is provided
+        system_prompt = None
+        if persona:
+            from ai_text.llm_handler import build_system_prompt
+            from ai_text.sports_news import fetch_sports_news
+            sport = league_context.get("sport", "football") if league_context else "football"
+            news = fetch_sports_news(sport)
+            system_prompt = build_system_prompt(persona, league_context, news)
+
         # Step 3: Attempt two-phase LLM if enabled
         if use_llm and llm_handler and persona and self._use_two_phase_llm():
             try:
                 # Phase 1: Get JSON plan from LLM
                 planner_prompt = self.build_planner_prompt(facts, persona)
-                llm_json = await self._call_llm_for_plan(llm_handler, planner_prompt)
+                llm_json = await self._call_llm_for_plan(llm_handler, planner_prompt, system_prompt)
 
                 if llm_json:
                     # Parse the plan
@@ -992,7 +994,7 @@ Remember: Pick stories from the primitives, don't invent new ones!
         if use_llm and llm_handler and persona:
             try:
                 prompt = self.build_llm_prompt(facts, persona)
-                llm_result = await self._call_llm(llm_handler, prompt, persona)
+                llm_result = await self._call_llm(llm_handler, prompt, persona, system_prompt)
 
                 if llm_result:
                     is_valid, validation_warnings = self._validate_llm_output(llm_result, facts)

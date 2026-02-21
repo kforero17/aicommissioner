@@ -131,6 +131,7 @@ class WaiverRecapGenerator(BaseGenerator):
             league_name=summary.league_name,
             week=summary.week,
             season=summary.season,
+            sport=summary.sport,
             transactions=transactions,
             total_faab_spent=summary.total_faab_spent,
             transaction_count=len(transactions),
@@ -449,12 +450,18 @@ class WaiverRecapGenerator(BaseGenerator):
         Returns:
             Complete prompt string for the LLM
         """
-        persona_obj = get_persona(persona)
         facts_json = json.dumps(asdict(facts), indent=2, default=str)
 
-        tone_examples = "\n".join(f'- "{ex}"' for ex in persona_obj.tone_examples)
+        pickup_context = ""
+        if facts.big_spenders:
+            lines_ctx = ["NOTABLE PICKUPS:"]
+            for t in facts.big_spenders[:5]:
+                added = ", ".join(t.players_added) if t.players_added else "?"
+                dropped = ", ".join(t.players_dropped) if t.players_dropped else "none"
+                lines_ctx.append(f'- "{t.team_name}" picked up {added} (${t.faab_spent} FAAB), dropped {dropped}')
+            pickup_context = "\n" + "\n".join(lines_ctx) + "\n"
 
-        return f"""You are a fantasy football commissioner writing a Waiver Wire recap.
+        return f"""You are a fantasy {facts.sport} commissioner writing a Waiver Wire recap.
 
 CRITICAL RULES:
 1. You may ONLY reference facts from the JSON below
@@ -465,17 +472,11 @@ CRITICAL RULES:
 6. Player names must match those in all_player_names
 7. Team names must match those in all_team_names
 
-PERSONA: {persona_obj.name}
-{persona_obj.instructions}
-
-TONE EXAMPLES:
-{tone_examples}
-
 FACTS PACK:
 ```json
 {facts_json}
 ```
-
+{pickup_context}
 Write a waiver wire recap that:
 - Opens with an engaging title/header about waiver activity
 - Highlights the story picks (biggest_spend, bargain_hunter, most_active)
@@ -517,6 +518,7 @@ DO NOT use asterisks for bold. Use emojis sparingly for emphasis.
             persona_instructions=persona_obj.instructions,
             valid_team_names=list(facts.all_team_names),
             valid_matchup_ids=None,
+            sport=facts.sport,
         )
 
     def render_from_plan(
@@ -664,7 +666,8 @@ DO NOT use asterisks for bold. Use emojis sparingly for emphasis.
         summary: WeeklySummary,
         persona: Optional[str] = None,
         use_llm: bool = True,
-        llm_handler: Optional[Any] = None
+        llm_handler: Optional[Any] = None,
+        league_context: Optional[dict] = None,
     ) -> GeneratorResult:
         """Generate a recap using the facts-first pattern with two-phase LLM.
 
@@ -686,6 +689,7 @@ DO NOT use asterisks for bold. Use emojis sparingly for emphasis.
             persona: Writing persona for LLM generation
             use_llm: Whether to attempt LLM generation
             llm_handler: Handler for LLM API calls
+            league_context: Optional league metadata for system prompt
 
         Returns:
             GeneratorResult with the generated recap and metadata
@@ -711,12 +715,21 @@ DO NOT use asterisks for bold. Use emojis sparingly for emphasis.
         # Step 2: Generate deterministic version (always available as fallback)
         det_title, det_content = self.render_deterministic(facts)
 
+        # Build system prompt if persona is provided
+        system_prompt = None
+        if persona:
+            from ai_text.llm_handler import build_system_prompt
+            from ai_text.sports_news import fetch_sports_news
+            sport = league_context.get("sport", "football") if league_context else "football"
+            news = fetch_sports_news(sport)
+            system_prompt = build_system_prompt(persona, league_context, news)
+
         # Step 3: Attempt two-phase LLM if enabled
         if use_llm and llm_handler and persona and self._use_two_phase_llm():
             try:
                 # Phase 1: Get JSON plan from LLM
                 planner_prompt = self.build_planner_prompt(facts, persona)
-                llm_json = await self._call_llm_for_plan(llm_handler, planner_prompt)
+                llm_json = await self._call_llm_for_plan(llm_handler, planner_prompt, system_prompt)
 
                 if llm_json:
                     # Parse the plan
@@ -784,7 +797,7 @@ DO NOT use asterisks for bold. Use emojis sparingly for emphasis.
         if use_llm and llm_handler and persona:
             try:
                 prompt = self.build_llm_prompt(facts, persona)
-                llm_result = await self._call_llm(llm_handler, prompt, persona)
+                llm_result = await self._call_llm(llm_handler, prompt, persona, system_prompt)
 
                 if llm_result:
                     # Validate LLM output

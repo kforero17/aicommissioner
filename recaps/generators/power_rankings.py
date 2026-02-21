@@ -765,11 +765,8 @@ class PowerRankingsGenerator(BaseGenerator):
         Returns:
             Complete prompt string for the LLM
         """
-        persona_obj = get_persona(persona)
         facts_json = json.dumps(asdict(facts), indent=2, default=str)
         player_highlights = self._format_player_highlights(facts)
-
-        tone_examples = "\n".join(f'- "{ex}"' for ex in persona_obj.tone_examples)
 
         return f"""You are a fantasy {facts.sport} commissioner writing a Power Rankings recap.
 
@@ -782,12 +779,6 @@ CRITICAL RULES:
 6. When mentioning ANY player, ALWAYS include their points scored (and projected points if available)
 7. For interesting teams (upsets, blowouts, big movers), mention 2-3 players with full stats
 8. For average teams, mention at least 1 player with stats
-
-PERSONA: {persona_obj.name}
-{persona_obj.instructions}
-
-TONE EXAMPLES:
-{tone_examples}
 
 FACTS PACK:
 ```json
@@ -1042,7 +1033,8 @@ DO NOT use asterisks for bold. Use emojis sparingly for emphasis.
         summary: WeeklySummary,
         persona: Optional[str] = None,
         use_llm: bool = True,
-        llm_handler: Optional[Any] = None
+        llm_handler: Optional[Any] = None,
+        league_context: Optional[dict] = None,
     ) -> GeneratorResult:
         """Generate a recap using the facts-first pattern with two-phase LLM.
 
@@ -1064,6 +1056,7 @@ DO NOT use asterisks for bold. Use emojis sparingly for emphasis.
             persona: Writing persona for LLM generation
             use_llm: Whether to attempt LLM generation
             llm_handler: Handler for LLM API calls
+            league_context: Optional league metadata for system prompt
 
         Returns:
             GeneratorResult with the generated recap and metadata
@@ -1087,12 +1080,21 @@ DO NOT use asterisks for bold. Use emojis sparingly for emphasis.
         # Step 2: Generate deterministic version (always available as fallback)
         det_title, det_content = self.render_deterministic(facts)
 
+        # Build system prompt if persona is provided
+        system_prompt = None
+        if persona:
+            from ai_text.llm_handler import build_system_prompt
+            from ai_text.sports_news import fetch_sports_news
+            sport = league_context.get("sport", "football") if league_context else "football"
+            news = fetch_sports_news(sport)
+            system_prompt = build_system_prompt(persona, league_context, news)
+
         # Step 3: Attempt two-phase LLM if enabled
         if use_llm and llm_handler and persona and self._use_two_phase_llm():
             try:
                 # Phase 1: Get JSON plan from LLM
                 planner_prompt = self.build_planner_prompt(facts, persona)
-                llm_json = await self._call_llm_for_plan(llm_handler, planner_prompt)
+                llm_json = await self._call_llm_for_plan(llm_handler, planner_prompt, system_prompt)
 
                 if llm_json:
                     # Parse the plan
@@ -1160,7 +1162,7 @@ DO NOT use asterisks for bold. Use emojis sparingly for emphasis.
         if use_llm and llm_handler and persona:
             try:
                 prompt = self.build_llm_prompt(facts, persona)
-                llm_result = await self._call_llm(llm_handler, prompt, persona)
+                llm_result = await self._call_llm(llm_handler, prompt, persona, system_prompt)
 
                 if llm_result:
                     # Validate LLM output

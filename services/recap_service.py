@@ -281,12 +281,14 @@ class RecapService:
             member_emails = self._get_league_member_emails(league)
             if member_emails:
                 try:
+                    sport = league.league_type.value if league.league_type else "football"
                     success = await self.email_publisher.send_recap_email(
                         to_emails=member_emails,
                         league_name=league.name,
                         week=league.week or 1,
                         recap_text=recap_text,
-                        recap_type=recap_type
+                        recap_type=recap_type,
+                        sport=sport,
                     )
                     results["email"] = success
                     if success:
@@ -375,12 +377,24 @@ class RecapService:
                 summary_generator = SummaryGenerator(db)
                 summary = await summary_generator.generate_weekly_summary(league_id, week)
 
+                # Build league context for system prompt
+                league_context = {
+                    "name": league.name,
+                    "sport": league.league_type.value if league.league_type else "football",
+                    "scoring_type": league.scoring_type,
+                    "num_teams": league.num_teams,
+                    "week": week,
+                    "season": league.season,
+                    "commissioner_notes": getattr(league, 'commissioner_notes', None),
+                }
+
                 # STEP 3: Generate content using facts-first generator
                 generator_result = await self.power_rankings_generator.generate(
                     summary=summary,
                     persona=league.ai_persona_style if league.enable_llm_rendering else None,
                     use_llm=league.enable_llm_rendering,
-                    llm_handler=self.llm_handler if league.enable_llm_rendering else None
+                    llm_handler=self.llm_handler if league.enable_llm_rendering else None,
+                    league_context=league_context if league.enable_llm_rendering else None,
                 )
 
                 recap_text = generator_result.content
@@ -592,12 +606,24 @@ class RecapService:
                     )
 
                 else:
+                    # Build league context for system prompt
+                    league_context = {
+                        "name": league.name,
+                        "sport": league.league_type.value if league.league_type else "football",
+                        "scoring_type": league.scoring_type,
+                        "num_teams": league.num_teams,
+                        "week": week,
+                        "season": league.season,
+                        "commissioner_notes": getattr(league, 'commissioner_notes', None),
+                    }
+
                     # STEP 3: Generate content using facts-first generator
                     generator_result = await self.waiver_generator.generate(
                         summary=summary,
                         persona=league.ai_persona_style if league.enable_llm_rendering else None,
                         use_llm=league.enable_llm_rendering,
-                        llm_handler=self.llm_handler if league.enable_llm_rendering else None
+                        llm_handler=self.llm_handler if league.enable_llm_rendering else None,
+                        league_context=league_context if league.enable_llm_rendering else None,
                     )
 
                     recap_text = generator_result.content

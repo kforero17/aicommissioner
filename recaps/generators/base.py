@@ -115,7 +115,8 @@ class BaseGenerator(ABC):
         summary: WeeklySummary,
         persona: Optional[str] = None,
         use_llm: bool = True,
-        llm_handler: Optional[Any] = None
+        llm_handler: Optional[Any] = None,
+        league_context: Optional[dict] = None,
     ) -> GeneratorResult:
         """Generate a recap using the facts-first pattern.
 
@@ -152,11 +153,20 @@ class BaseGenerator(ABC):
         # Step 2: Generate deterministic version (always available as fallback)
         det_title, det_content = self.render_deterministic(facts)
 
+        # Build system prompt if persona is provided
+        system_prompt = None
+        if persona:
+            from ai_text.llm_handler import build_system_prompt
+            from ai_text.sports_news import fetch_sports_news
+            sport = league_context.get("sport", "football") if league_context else "football"
+            news = fetch_sports_news(sport)
+            system_prompt = build_system_prompt(persona, league_context, news)
+
         # Step 3: Attempt LLM if requested
         if use_llm and llm_handler and persona:
             try:
                 prompt = self.build_llm_prompt(facts, persona)
-                llm_result = await self._call_llm(llm_handler, prompt, persona)
+                llm_result = await self._call_llm(llm_handler, prompt, persona, system_prompt)
 
                 if llm_result:
                     latency_ms = int((time.time() - start_time) * 1000)
@@ -219,7 +229,8 @@ class BaseGenerator(ABC):
         self,
         llm_handler: Any,
         prompt: str,
-        persona: str
+        persona: str,
+        system_prompt: Optional[str] = None,
     ) -> Optional[str]:
         """Call LLM handler with the prompt.
 
@@ -227,18 +238,20 @@ class BaseGenerator(ABC):
             llm_handler: The LLM handler instance
             prompt: The complete prompt to send
             persona: The persona being used
+            system_prompt: Optional system prompt for persona/context
 
         Returns:
             Generated text from the LLM, or None on failure
         """
         if llm_handler is None:
             return None
-        return await llm_handler.call_prompt(prompt, provider="openai")
+        return await llm_handler.call_prompt(prompt, provider="openai", system_prompt=system_prompt)
 
     async def _call_llm_for_plan(
         self,
         llm_handler: Any,
-        prompt: str
+        prompt: str,
+        system_prompt: Optional[str] = None,
     ) -> Optional[str]:
         """Call LLM to get a JSON plan.
 
@@ -249,13 +262,14 @@ class BaseGenerator(ABC):
         Args:
             llm_handler: The LLM handler instance
             prompt: The planner prompt requesting JSON output
+            system_prompt: Optional system prompt for persona/context
 
         Returns:
             JSON string from LLM, or None on failure
         """
         if llm_handler is None:
             return None
-        return await llm_handler.call_prompt(prompt, provider="openai")
+        return await llm_handler.call_prompt(prompt, provider="openai", system_prompt=system_prompt)
 
     def _use_two_phase_llm(self) -> bool:
         """Whether this generator uses two-phase LLM.

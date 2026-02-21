@@ -20,6 +20,7 @@ interface LeagueData {
   enable_email_recaps: boolean
   has_email_recipients: boolean
   groupme_bot_id: string | null
+  commissioner_notes: string | null
 }
 
 interface LeagueSettings {
@@ -31,6 +32,7 @@ interface LeagueSettings {
   power_rankings_time: string
   waiver_recap_day: string
   waiver_recap_time: string
+  commissioner_notes: string
 }
 
 interface LeagueMember {
@@ -51,10 +53,12 @@ interface TaskStatus {
 }
 
 const STYLE_OPTIONS = [
-  { value: 'balanced', label: 'Balanced Commissioner' },
-  { value: 'snark', label: 'Snark Master' },
-  { value: 'hype', label: 'Hype Machine' },
-  { value: 'nerd', label: 'Stats Nerd' }
+  { value: 'witty', label: 'Witty — Clever humor, puns, and playful roasting' },
+  { value: 'professional', label: 'Professional — ESPN-style sports journalism' },
+  { value: 'roastmaster', label: 'Roastmaster — Savage trash talk and brutal honesty' },
+  { value: 'hype', label: 'Hype — Maximum energy and excitement' },
+  { value: 'analyst', label: 'Analyst — Deep strategy and statistical insights' },
+  { value: 'casual', label: 'Casual — Friendly group chat vibes' },
 ]
 
 const DAYS = [
@@ -195,12 +199,13 @@ export default function SettingsPage() {
   const [settings, setSettings] = useState<LeagueSettings>({
     enable_power_rankings: true,
     enable_waiver_recaps: true,
-    ai_persona_style: 'balanced',
+    ai_persona_style: 'witty',
     enable_llm_rendering: false,
     power_rankings_day: 'tuesday',
     power_rankings_time: '09:00',
     waiver_recap_day: 'wednesday',
-    waiver_recap_time: '09:00'
+    waiver_recap_time: '09:00',
+    commissioner_notes: ''
   })
   const [groupmeBotId, setGroupmeBotId] = useState<string | null>(null)
   const [enableEmailRecaps, setEnableEmailRecaps] = useState(false)
@@ -238,12 +243,13 @@ export default function SettingsPage() {
           setSettings({
             enable_power_rankings: league.enable_power_rankings,
             enable_waiver_recaps: league.enable_waiver_recaps,
-            ai_persona_style: league.ai_persona_style || 'balanced',
+            ai_persona_style: league.ai_persona_style || 'witty',
             enable_llm_rendering: league.enable_llm_rendering,
             power_rankings_day: league.power_rankings_day || 'tuesday',
             power_rankings_time: league.power_rankings_time || '09:00',
             waiver_recap_day: league.waiver_recap_day || 'wednesday',
-            waiver_recap_time: league.waiver_recap_time || '09:00'
+            waiver_recap_time: league.waiver_recap_time || '09:00',
+            commissioner_notes: league.commissioner_notes || ''
           })
           setGroupmeBotId(league.groupme_bot_id)
           setEnableEmailRecaps(league.enable_email_recaps)
@@ -331,16 +337,21 @@ export default function SettingsPage() {
 
       if (response.ok) {
         showMessage('success', 'Settings saved successfully!')
+        await loadSettings()
       } else if (response.status === 401) {
-        showMessage('error', 'Please log in to save settings')
+        showMessage('error', 'Your session has expired. Please log in again.')
       } else if (response.status === 404) {
-        showMessage('error', 'League not found')
+        const error = await response.json().catch(() => ({}))
+        console.error('Save failed with 404:', error)
+        showMessage('error', error.detail || 'League not found. You may not have permission to edit this league.')
       } else {
         const error = await response.json().catch(() => ({}))
+        console.error(`Save failed with status ${response.status}:`, error)
         showMessage('error', error.detail || 'Failed to save settings')
       }
-    } catch {
-      showMessage('error', 'Network error saving settings')
+    } catch (err) {
+      console.error('Network error saving settings:', err)
+      showMessage('error', 'Network error saving settings. Please check your connection.')
     } finally {
       setSaving(false)
     }
@@ -383,7 +394,28 @@ export default function SettingsPage() {
         return
       }
 
-      const { task_id } = await response.json()
+      const data = await response.json()
+      const { task_id, status: taskStatus, result: inlineResult } = data
+
+      // Direct result (no Celery) — use inline content
+      if (taskStatus === 'SUCCESS' && inlineResult) {
+        const content = inlineResult.content as string
+        if (content) {
+          setPreviewContent(content)
+          setShowPreview(true)
+        } else {
+          showMessage('error', 'No content returned from preview')
+        }
+        setTestProgress('')
+        return
+      }
+
+      if (!task_id) {
+        showMessage('error', 'Failed to start content generation')
+        setTestProgress('')
+        return
+      }
+
       setTestProgress('Generating power rankings preview...')
 
       const maxAttempts = 60
@@ -749,13 +781,30 @@ export default function SettingsPage() {
                 onChange={(e) => setSettings(prev => ({ ...prev, ai_persona_style: e.target.value }))}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               >
-                <option value="balanced">Balanced Commissioner - Professional with occasional wit</option>
-                <option value="snark">Snark Master - Heavy on the trash talk and roasts</option>
-                <option value="hype">Hype Machine - Always excited, always positive</option>
-                <option value="nerd">Stats Nerd - Deep analysis, lots of numbers</option>
+                {STYLE_OPTIONS.map(opt => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
               </select>
               <p className="text-xs text-gray-500 mt-2">
                 This sets the tone for how your AI writes recaps
+              </p>
+            </div>
+          )}
+
+          {settings.enable_llm_rendering && (
+            <div className="mt-6">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Commissioner Notes
+              </label>
+              <textarea
+                value={settings.commissioner_notes}
+                onChange={(e) => setSettings(prev => ({ ...prev, commissioner_notes: e.target.value }))}
+                rows={4}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                placeholder="Add league lore, rivalries, nicknames, running jokes... The AI will weave these into recaps."
+              />
+              <p className="text-xs text-gray-500 mt-2">
+                Give the AI context about your league — rivalries, inside jokes, team nicknames. This makes recaps feel personal.
               </p>
             </div>
           )}

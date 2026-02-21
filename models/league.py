@@ -58,7 +58,8 @@ class League(Base):
     enable_waiver_recaps: Mapped[bool] = mapped_column(Boolean, default=True)
     enable_llm_rendering: Mapped[bool] = mapped_column(Boolean, default=False)
     ai_persona_style: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
-    
+    commissioner_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     # Schedule settings
     power_rankings_day: Mapped[str] = mapped_column(String(10), default="tuesday")
     power_rankings_time: Mapped[str] = mapped_column(String(10), default="09:00")

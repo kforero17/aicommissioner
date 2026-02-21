@@ -414,13 +414,14 @@ class LLMHandler:
             try:
                 # Generate prompt
                 base_text = self.deterministic_fallback(summary, style)
-                prompt = self._build_prompt(base_text, persona or style)
+                system_prompt = build_system_prompt(persona or style) if persona else None
+                prompt = base_text  # The deterministic text IS the prompt content
 
                 # Call LLM with timeout
                 if provider == "openai":
-                    text = await self._call_openai_with_timeout(prompt)
+                    text = await self._call_openai_with_timeout(prompt, system_prompt)
                 else:
-                    text = await self._call_anthropic_with_timeout(prompt)
+                    text = await self._call_anthropic_with_timeout(prompt, system_prompt)
 
                 # Success - record and return
                 circuit.record_success()
@@ -501,7 +502,7 @@ class LLMHandler:
             f"OpenAI rate limited, backing off {details['wait']:.1f}s (attempt {details['tries']})"
         ),
     )
-    async def _call_openai_with_timeout(self, prompt: str) -> str:
+    async def _call_openai_with_timeout(self, prompt: str, system_prompt: Optional[str] = None) -> str:
         """Call OpenAI API with timeout and exponential backoff for rate limits.
 
         Uses exponential backoff (via backoff library) for rate limit errors.
@@ -519,13 +520,13 @@ class LLMHandler:
         try:
             response = await asyncio.wait_for(
                 self.openai_client.chat.completions.create(
-                    model="gpt-3.5-turbo",
+                    model="gpt-4o-mini",
                     messages=[
-                        {"role": "system", "content": "You are a fantasy football expert who writes engaging recaps for league group chats."},
+                        {"role": "system", "content": system_prompt or "You are a fantasy sports expert who writes engaging recaps for league group chats."},
                         {"role": "user", "content": prompt}
                     ],
-                    max_tokens=500,
-                    temperature=0.8
+                    max_tokens=1500,
+                    temperature=0.7
                 ),
                 timeout=self.DEFAULT_TIMEOUT_SECONDS
             )
@@ -543,7 +544,7 @@ class LLMHandler:
             f"Anthropic rate limited, backing off {details['wait']:.1f}s (attempt {details['tries']})"
         ),
     )
-    async def _call_anthropic_with_timeout(self, prompt: str) -> str:
+    async def _call_anthropic_with_timeout(self, prompt: str, system_prompt: Optional[str] = None) -> str:
         """Call Anthropic API with timeout and exponential backoff for rate limits.
 
         Uses exponential backoff (via backoff library) for rate limit errors.
@@ -563,9 +564,10 @@ class LLMHandler:
             response = await asyncio.wait_for(
                 asyncio.to_thread(
                     self.anthropic_client.messages.create,
-                    model="claude-3-haiku-20240307",
-                    max_tokens=500,
-                    temperature=0.8,
+                    model="claude-3-5-haiku-20241022",
+                    max_tokens=1500,
+                    temperature=0.7,
+                    system=system_prompt or "You are a fantasy sports expert who writes engaging recaps for league group chats.",
                     messages=[{"role": "user", "content": prompt}]
                 ),
                 timeout=self.DEFAULT_TIMEOUT_SECONDS
@@ -574,40 +576,6 @@ class LLMHandler:
         except asyncio.TimeoutError:
             logger.warning("Anthropic API call timed out", extra={"timeout_seconds": self.DEFAULT_TIMEOUT_SECONDS})
             raise
-
-    def _build_prompt(self, base_text: str, persona: str) -> str:
-        """Build LLM prompt from base text and persona.
-
-        Args:
-            base_text: Deterministically generated base text
-            persona: Desired persona/style
-
-        Returns:
-            Complete prompt
-        """
-        persona_instructions = {
-            "witty": "Rewrite this fantasy football recap with wit, humor, and clever observations. Use puns, jokes, and playful roasting of teams. Keep it fun and entertaining.",
-            "professional": "Rewrite this fantasy football recap in a professional sports journalism style. Use proper analysis, statistics, and formal language.",
-            "roastmaster": "Rewrite this fantasy football recap with savage roasts and trash talk. Really go after the losing teams and bad performances. Be brutal but funny.",
-            "hype": "Rewrite this fantasy football recap with maximum energy and excitement. Use lots of caps, exclamation points, and hype up everything. Make it feel like a sports center highlight reel.",
-            "analyst": "Rewrite this fantasy football recap with deep fantasy analysis and insights. Focus on trends, predictions, and strategic observations."
-        }
-
-        instruction = persona_instructions.get(
-            persona,
-            "Rewrite this fantasy football recap in an engaging, entertaining style."
-        )
-
-        return f"""
-{instruction}
-
-Keep the same factual information but make it more engaging. The recap should be 200-400 words and formatted for a group chat message.
-
-Original recap:
-{base_text}
-
-Rewritten recap:
-"""
 
     def _fallback_to_deterministic(
         self,
@@ -647,7 +615,7 @@ Rewritten recap:
             latency_ms=latency_ms
         )
 
-    async def call_prompt(self, prompt: str, provider: str = "openai") -> Optional[str]:
+    async def call_prompt(self, prompt: str, provider: str = "openai", system_prompt: Optional[str] = None) -> Optional[str]:
         """Call LLM with a pre-built prompt.
 
         This is a simplified interface for generators to send prompts directly.
@@ -686,9 +654,9 @@ Rewritten recap:
 
         try:
             if provider == "openai":
-                text = await self._call_openai_with_timeout(prompt)
+                text = await self._call_openai_with_timeout(prompt, system_prompt)
             else:
-                text = await self._call_anthropic_with_timeout(prompt)
+                text = await self._call_anthropic_with_timeout(prompt, system_prompt)
 
             circuit.record_success()
             logger.info("LLM call_prompt succeeded", extra={"provider": provider})
@@ -721,3 +689,56 @@ Rewritten recap:
             provider: circuit.get_status()
             for provider, circuit in self.circuit_breakers.items()
         }
+
+
+def build_system_prompt(
+    persona_name: str,
+    league_context: Optional[dict] = None,
+    sports_news: Optional[list[str]] = None,
+) -> str:
+    from recaps.prompts.personas import get_persona
+    persona = get_persona(persona_name)
+
+    parts = [
+        f"You are the AI Commissioner — a fantasy sports expert writing in the '{persona.name}' style.",
+        "",
+        "PERSONA IDENTITY:",
+        persona.instructions,
+        "",
+        "TONE EXAMPLES (match this voice):",
+    ]
+    parts.extend(f'- "{ex}"' for ex in persona.tone_examples)
+
+    if league_context:
+        parts.append("")
+        parts.append("LEAGUE CONTEXT:")
+        if league_context.get("name"):
+            parts.append(f"- League: {league_context['name']}")
+        if league_context.get("sport"):
+            parts.append(f"- Sport: {league_context['sport']}")
+        if league_context.get("scoring_type"):
+            parts.append(f"- Scoring: {league_context['scoring_type']}")
+        if league_context.get("num_teams"):
+            parts.append(f"- Teams: {league_context['num_teams']}")
+        if league_context.get("week"):
+            parts.append(f"- Week: {league_context['week']}")
+        if league_context.get("season"):
+            parts.append(f"- Season: {league_context['season']}")
+
+    if league_context and league_context.get("commissioner_notes"):
+        parts.append("")
+        parts.append("COMMISSIONER NOTES (weave these naturally into your writing):")
+        parts.append(league_context["commissioner_notes"])
+
+    if sports_news:
+        parts.append("")
+        parts.append("CURRENT SPORTS NEWS (reference naturally when relevant):")
+        parts.extend(f"- {headline}" for headline in sports_news)
+
+    parts.append("")
+    parts.append("STAT CITATION RULES:")
+    parts.append("- Every time you mention a player, include their points in parentheses")
+    parts.append("- Include projected points when available: 'Player Name (32.1 pts, proj 24.5)'")
+    parts.append("- Never mention a player without their numbers")
+
+    return "\n".join(parts)
